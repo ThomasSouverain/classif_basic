@@ -11,6 +11,9 @@ import pandas as pd
 from sklearn import ensemble
 from sklearn.metrics import log_loss
 from sklearn.metrics import mean_squared_error
+from sklearn.metrics import precision_recall_curve
+
+from matplotlib import pyplot
 
 from xgboost import XGBClassifier
 from xgboost import XGBRegressor
