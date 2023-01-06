@@ -1,6 +1,6 @@
 # classif_basic
 
-This package provides scripts to accelerate: 
+On basic binary and multi-classification, and on regression (see the notebooks for application), this package provides scripts to accelerate:
 
 ## The basic processing of data
 
@@ -22,16 +22,17 @@ Preparations specific to a dataset:
 
 - "train_naive_xgb": trains a basic tree-based algorithm from XGBoost (with defaults settings of hyper-parameters)
 
+- "pickle_save_model": stores the model
+
 - "prediction_train_valid_by_task": provides a predicted target
 
 - "compute_best_fscore": specific to the binary classification cases, to optimise the transition from scores -> to labels (0, 1) according to the F-score.
 
-
-## Storage and first analysis of the model ##
-
-- "pickle_save_model": stores the model 
+## First analysis of the model ## 
 
 - "features_importances_from_pickle": basically computes the features' importance attribution (using the Shapley values approximated by SHAP library)
+
+- "select_important_features": from initial features list (by default from Census dataset), selects the one with the highest SHAP importance (by default >1%)
 
 - "augment_train_valid_set_with_results": adds predictions and statistics to a model to the dataset train&valid,
     to enable further comparison and selection between the initial and fair train models.
