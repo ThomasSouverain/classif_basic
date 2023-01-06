@@ -15,8 +15,7 @@ from sklearn.metrics import precision_recall_curve
 
 from matplotlib import pyplot
 
-from xgboost import XGBClassifier
-from xgboost import XGBRegressor
+import xgboost
 
 def train_naive_xgb(
     X_train: pd.DataFrame,
@@ -92,7 +91,7 @@ def train_naive_xgb(
             "use_label_encoder": False,
         }
 
-        model = XGBClassifier(**xgb_classif_params)
+        model = xgboost.XGBClassifier(**xgb_classif_params)
 
         # map user's preferences of stat evaluation with xgboost eval_metrics for better training of the model
         if stat_criteria in {"auc", "aucpr"}:
@@ -117,7 +116,7 @@ def train_naive_xgb(
             "learning_rate": 0.3,
         }
 
-        model = XGBClassifier(**xgb_multiclass_params)
+        model = xgboost.XGBClassifier(**xgb_multiclass_params)
 
         # map user's preferences of stat evaluation with xgboost eval_metrics for better training of the model
         if stat_criteria in {"merror", "mlogloss", "auc", "f1_score"}:
@@ -141,7 +140,7 @@ def train_naive_xgb(
             "use_label_encoder": False,
         }
 
-        model = XGBRegressor(**xgb_reg_params)
+        model = xgboost.XGBRegressor(**xgb_reg_params)
 
         # map user's preferences of stat evaluation with xgboost eval_metrics for better training of the model
         if stat_criteria in {"rmse", "mape"}:
@@ -284,3 +283,35 @@ def compute_best_fscore(Y_splitted_set: pd.DataFrame, proba_splitted_set: pd.Dat
     pyplot
         A plot of precision / recall curve for the model showing the best threshold.
     """
+    precision_valid, recall_valid, thresholds = precision_recall_curve(
+        Y_splitted_set, proba_splitted_set
+    )
+    # convert to f score
+    fscore = (2 * precision_valid * recall_valid) / (precision_valid + recall_valid)
+    # locate the index of the largest f score
+    ix = np.argmax(fscore)
+
+    print(f"len(thresholds): {len(thresholds)}")
+    print(Y_splitted_set.shape)
+
+    best_threshold = thresholds[ix]
+    best_fscore = fscore[ix]
+
+    print("Best Threshold=%f, with F-Score=%.3f" % (best_threshold, best_fscore))
+
+    # plot the roc curve for the model
+    no_skill = len(Y_splitted_set[Y_splitted_set == 1]) / len(Y_splitted_set)
+    train_fig = pyplot.plot([0, 1], [no_skill, no_skill], linestyle="--", label="No Skill")
+    train_fig = pyplot.plot(recall_valid, precision_valid, marker=".", label="Model")
+    train_fig = pyplot.scatter(
+        recall_valid[ix], precision_valid[ix], marker="o", color="black", label="Best"
+    )
+    # axis labels
+    train_fig = pyplot.title("Statistical performance on valid set (PR AUC)")
+    train_fig = pyplot.xlabel("Recall")
+    train_fig = pyplot.ylabel("Precision")
+    train_fig = pyplot.legend()
+    # show the plot
+    pyplot.show(train_fig)
+
+    return best_threshold, best_fscore
