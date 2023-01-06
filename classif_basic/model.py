@@ -32,7 +32,7 @@ def train_naive_xgb(
     adjusted_sample_weight_train: np.ndarray = None,
     save_model: bool = False,
 ) -> np.ndarray:
-    """Quickly train a XGB model to test fairdream in a notebook. In real life, will be replaced by Brain predictions.
+    """Quickly train a XGB model to test classif_basic in a notebook. In real life, will be replaced by Brain predictions.
 
     Parameters
     ----------

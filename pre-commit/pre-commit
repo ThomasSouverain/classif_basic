@@ -1,0 +1,6 @@
+#!/bin/sh
+
+echo "Launching pre-commit"
+echo ${PWD}
+make reformat_file
+sudo chown -R $(id -u):$(id -g) . 
