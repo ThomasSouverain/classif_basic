@@ -7,15 +7,13 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
-
+import xgboost
+from matplotlib import pyplot
 from sklearn import ensemble
 from sklearn.metrics import log_loss
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics import precision_recall_curve
-
-from matplotlib import pyplot
-
-import xgboost
+from xgboost.sklearn import XGBModel
 
 def train_naive_xgb(
     X_train: pd.DataFrame,

@@ -1,9 +1,27 @@
+import json
 import os
 import pickle
+from io import BytesIO
+from typing import Any
+from typing import Optional
+from typing import Union
 
 import numpy as np
 import pandas as pd
 import shap
+from xgboost.core import Booster 
+from xgboost.sklearn import XGBModel
+
+# for XGB trees' visualisation
+
+# from ._typing import PathLike
+# from .core import Booster
+# from .sklearn import XGBModel
+
+Axes = Any  # real type is matplotlib.axes.Axes
+GraphvizSource = Any  # real type is graphviz.Source
+
+PathLike = Union[str, os.PathLike]
 
 def features_importances_from_pickle(
     augmented_train_valid_set: pd.DataFrame,
@@ -233,3 +251,142 @@ def augment_train_valid_set_with_results(
         previous_train_valid_set[f"predicted_{model_name}"] = Y_pred_train_valid
 
     return previous_train_valid_set
+
+
+def to_graphviz(
+    booster: Booster,
+    fmap: PathLike = "",
+    num_trees: int = 0,
+    rankdir: Optional[str] = None,
+    yes_color: Optional[str] = None,
+    no_color: Optional[str] = None,
+    condition_node_params: Optional[dict] = None,
+    leaf_node_params: Optional[dict] = None,
+    **kwargs: Any
+) -> GraphvizSource:
+    """Convert specified tree to graphviz instance. IPython can automatically plot
+    the returned graphviz instance. Otherwise, you should call .render() method
+    of the returned graphviz instance.
+    Parameters
+    ----------
+    booster : Booster, XGBModel
+        Booster or XGBModel instance
+    fmap: str (optional)
+       The name of feature map file
+    num_trees : int, default 0
+        Specify the ordinal number of target tree
+    rankdir : str, default "UT"
+        Passed to graphviz via graph_attr
+    yes_color : str, default '#0000FF'
+        Edge color when meets the node condition.
+    no_color : str, default '#FF0000'
+        Edge color when doesn't meet the node condition.
+    condition_node_params : dict, optional
+        Condition node configuration for for graphviz.  Example:
+        .. code-block:: python
+            {'shape': 'box',
+             'style': 'filled,rounded',
+             'fillcolor': '#78bceb'}
+    leaf_node_params : dict, optional
+        Leaf node configuration for graphviz. Example:
+        .. code-block:: python
+            {'shape': 'box',
+             'style': 'filled',
+             'fillcolor': '#e48038'}
+    \\*\\*kwargs: dict, optional
+        Other keywords passed to graphviz graph_attr, e.g. ``graph [ {key} = {value} ]``
+    Returns
+    -------
+    graph: graphviz.Source
+    """
+    try:
+        from graphviz import Source
+    except ImportError as e:
+        raise ImportError('You must install graphviz to plot tree') from e
+    if isinstance(booster, XGBModel):
+        booster = booster.get_booster()
+
+    # squash everything back into kwargs again for compatibility
+    parameters = 'dot'
+    extra = {}
+    for key, value in kwargs.items():
+        extra[key] = value
+
+    if rankdir is not None:
+        kwargs['graph_attrs'] = {}
+        kwargs['graph_attrs']['rankdir'] = rankdir
+    for key, value in extra.items():
+        if kwargs.get("graph_attrs", None) is not None:
+            kwargs['graph_attrs'][key] = value
+        else:
+            kwargs['graph_attrs'] = {}
+        del kwargs[key]
+
+    if yes_color is not None or no_color is not None:
+        kwargs['edge'] = {}
+    if yes_color is not None:
+        kwargs['edge']['yes_color'] = yes_color
+    if no_color is not None:
+        kwargs['edge']['no_color'] = no_color
+
+    if condition_node_params is not None:
+        kwargs['condition_node_params'] = condition_node_params
+    if leaf_node_params is not None:
+        kwargs['leaf_node_params'] = leaf_node_params
+
+    if kwargs:
+        parameters += ':'
+        parameters += json.dumps(kwargs)
+    tree = booster.get_dump(
+        fmap=fmap,
+        dump_format=parameters)[num_trees]
+    g = Source(tree)
+    return g
+
+def plot_tree(
+    booster: Booster,
+    fmap: PathLike = "",
+    num_trees: int = 0,
+    rankdir: Optional[str] = None,
+    ax: Optional[Axes] = None,
+    **kwargs: Any
+) -> Axes:
+    """Plot specified tree.
+    Parameters
+    ----------
+    booster : Booster, XGBModel
+        Booster or XGBModel instance
+    fmap: str (optional)
+       The name of feature map file
+    num_trees : int, default 0
+        Specify the ordinal number of target tree
+    rankdir : str, default "TB"
+        Passed to graphviz via graph_attr
+    ax : matplotlib Axes, default None
+        Target axes instance. If None, new figure and axes will be created.
+    kwargs :
+        Other keywords passed to to_graphviz
+    Returns
+    -------
+    ax : matplotlib Axes
+    """
+    try:
+        from matplotlib import pyplot as plt
+        from matplotlib import image
+    except ImportError as e:
+        raise ImportError('You must install matplotlib to plot tree') from e
+
+    if ax is None:
+        _, ax = plt.subplots(1, 1)
+
+    g = to_graphviz(booster, fmap=fmap, num_trees=num_trees, rankdir=rankdir,
+                    **kwargs)
+
+    s = BytesIO()
+    s.write(g.pipe(format='png'))
+    s.seek(0)
+    img = image.imread(s)
+
+    ax.imshow(img)
+    ax.axis('off')
+    return ax

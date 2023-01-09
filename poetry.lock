@@ -362,6 +362,19 @@ unicode = ["unicodedata2 (>=14.0.0)"]
 woff = ["zopfli (>=0.1.4)", "brotlicffi (>=0.8.0)", "brotli (>=1.0.1)"]
 
 [[package]]
+name = "graphviz"
+version = "0.20.1"
+description = "Simple Python interface for Graphviz"
+category = "dev"
+optional = false
+python-versions = ">=3.7"
+
+[package.extras]
+dev = ["tox (>=3)", "flake8", "pep8-naming", "wheel", "twine"]
+docs = ["sphinx (>=5)", "sphinx-autodoc-typehints", "sphinx-rtd-theme"]
+test = ["pytest (>=7)", "pytest-mock (>=3)", "mock (>=4)", "pytest-cov", "coverage"]
+
+[[package]]
 name = "identify"
 version = "2.4.5"
 description = "File identification library for Python"
@@ -1758,7 +1771,7 @@ testing = ["pytest (>=6)", "pytest-checkdocs (>=2.4)", "pytest-flake8", "pytest-
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8.0"
-content-hash = "1a8a6460de2647bea670c86acb667600740072225c4d9f3180710406b1fae62a"
+content-hash = "06fa069e72068e0470ff04b323aa407a621fe5b32ef368d67a8ebcede121d7c1"
 
 [metadata.files]
 anyio = []
@@ -1793,6 +1806,7 @@ executing = []
 fairlearn = []
 filelock = []
 fonttools = []
+graphviz = []
 identify = []
 idna = []
 importlib-resources = []
