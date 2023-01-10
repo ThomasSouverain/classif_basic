@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import time
 from io import BytesIO
 from typing import Any
 from typing import Optional
@@ -377,7 +378,7 @@ def plot_tree(
         raise ImportError('You must install matplotlib to plot tree') from e
 
     if ax is None:
-        _, ax = plt.subplots(1, 1)
+        _, ax = plt.subplots(1, 1, figsize=(25,15))
 
     g = to_graphviz(booster, fmap=fmap, num_trees=num_trees, rankdir=rankdir,
                     **kwargs)
@@ -390,3 +391,59 @@ def plot_tree(
     ax.imshow(img)
     ax.axis('off')
     return ax
+
+# the following functions join the trees of XGBoost sharing the same first splitting feature
+def extract_first_splitting_feature(booster:Booster, num_trees:int)->str:
+    """Extract the feature of the first node of the XGB tree.
+
+    Args:
+        booster (Booster): trained and loaded XGB Model
+        num_trees (int): index of the XGBoost tree
+
+    Returns:
+        str: name of the feature used as a first node, i.e. with the most importante 'discriminative' power for the tree 
+    """
+    
+    list_description_trees = booster.get_booster().get_dump()
+
+    first_split = list_description_trees[num_trees].split('[')[1]
+    first_feature = first_split.split(']')[0]
+
+    return first_feature
+
+def get_dict_first_splits(booster:Booster)->dict:
+    """Joins the XGB trees sharing the same first splitting feature, through the feature name (key:str) and the indexes of the trees (value:list(int)).
+
+    Args:
+        booster (Booster): trained and loaded XGB Model
+
+    Returns:
+        dict: name of the common splitting feature (key:str) and corresponding indexes of the trees (value:list(int)).
+    """
+
+    t_begin = time.time()
+
+    # creates a dict to store the indexes of a tree associated with the same first (i.e. most important) splitting feature
+    dict_trees = {}
+
+    # booster is a XGBoost model fitted using the sklearn API
+    list_description_trees = booster.get_booster().get_dump()
+    trees_total_number = len(list_description_trees)
+
+    for tree_nb in range(trees_total_number):
+
+        first_splitting_feature = extract_first_splitting_feature(booster=booster, num_trees=tree_nb)
+
+        dict_trees.setdefault(first_splitting_feature,[])
+        dict_trees[first_splitting_feature].append(tree_nb)
+
+    t_end = time.time()
+    print(f"Getting {trees_total_number} trees of XGBoost with the same first splitting feature took {t_end - t_begin} seconds")
+
+    print("'''First splitting feature by tree''' \n")
+
+    for splitting_feature in dict_trees:
+        print(f" {splitting_feature} for trees {dict_trees[splitting_feature]} : {len(dict_trees[splitting_feature])} tree(s)")
+        # TODO further step: df with these 3 columns, and get the argmax of trees number?
+    
+    return dict_trees
