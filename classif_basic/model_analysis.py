@@ -411,19 +411,22 @@ def extract_first_splitting_feature(booster:Booster, num_trees:int)->str:
 
     return first_feature
 
-def get_dict_first_splits(booster:Booster)->dict:
+def get_df_first_splits(booster:Booster,get_max_split_feature:bool=False,nb_min_trees:int=None)->pd.DataFrame:
     """Joins the XGB trees sharing the same first splitting feature, through the feature name (key:str) and the indexes of the trees (value:list(int)).
 
     Args:
         booster (Booster): trained and loaded XGB Model
+        get_max_split_feature (bool, optional): Returns only in the pd.DataFrame the feature mostly used in trees for the first split. Defaults to False.
+        nb_min_trees (int, optional): Returns only in the pd.DataFrame the features used by 'nb_min_trees' trees or more. Defaults to None.
 
     Returns:
-        dict: name of the common splitting feature (key:str) and corresponding indexes of the trees (value:list(int)).
-    """
+        pd.DataFrame: stores the feature of the first split, the indexes of corresponding trees, and their number,
+            In the 3 columns "first_splitting_feature","trees_index", "nb_trees".     """
 
-    t_begin = time.time()
+    # t_begin = time.time()
 
     # creates a dict to store the indexes of a tree associated with the same first (i.e. most important) splitting feature
+    # s.t. name of the common splitting feature (key:str) and corresponding indexes of the trees (value:list(int))
     dict_trees = {}
 
     # booster is a XGBoost model fitted using the sklearn API
@@ -437,13 +440,24 @@ def get_dict_first_splits(booster:Booster)->dict:
         dict_trees.setdefault(first_splitting_feature,[])
         dict_trees[first_splitting_feature].append(tree_nb)
 
-    t_end = time.time()
-    print(f"Getting {trees_total_number} trees of XGBoost with the same first splitting feature took {t_end - t_begin} seconds")
+    # t_end = time.time()
+    # print(f"Getting {trees_total_number} trees of XGBoost with the same first splitting feature took {t_end - t_begin} seconds")
 
-    print("'''First splitting feature by tree''' \n")
+    # then, structure this information in a pd.DataFrame 
+    df_first_splits = pd.DataFrame(dict_trees.items(),columns=["first_splitting_feature","trees_index"])
+    df_first_splits["nb_trees"] = df_first_splits["trees_index"].str.len()
+    # sort df by number of trees in which the feature is used as first splitting node 
+    df_first_splits = df_first_splits.sort_values(by="nb_trees",ascending=False)
+    df_first_splits = df_first_splits.set_index("first_splitting_feature")
 
-    for splitting_feature in dict_trees:
-        print(f" {splitting_feature} for trees {dict_trees[splitting_feature]} : {len(dict_trees[splitting_feature])} tree(s)")
-        # TODO further step: df with these 3 columns, and get the argmax of trees number?
-    
-    return dict_trees
+    # select the pd.DataFrame in case options are set by the user
+    if (nb_min_trees is not None) and (get_max_split_feature is True):
+        return NotImplementedError("get_max_split_feature and nb_min_trees can not be set as options together. Either choose one, or none of the options.")
+    elif get_max_split_feature is True:
+        df_first_splits = df_first_splits.loc[df_first_splits["nb_trees"].idxmax()]
+    elif nb_min_trees is not None:
+        df_first_splits = df_first_splits.loc[df_first_splits["nb_trees"]>=nb_min_trees]
+    else:
+        pass
+
+    return df_first_splits
