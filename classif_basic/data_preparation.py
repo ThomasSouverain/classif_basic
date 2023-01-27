@@ -42,7 +42,7 @@ def train_valid_test_split(X: pd.DataFrame, Y: pd.DataFrame, model_task: str) ->
 
     if model_task in {"classification", "multiclass"}:
 
-        X = pd.get_dummies(X)
+        # X = pd.get_dummies(X)
         # Keep test values to ensure model is behaving properly
         X_model, X_test, Y_model, Y_test = train_test_split(
             X, Y, test_size=VALID_SIZE, random_state=SEED, stratify=Y

@@ -80,6 +80,13 @@ def train_naive_xgb(
 
     if model_task == "classification":
 
+        # set interaction constraints on the ancestors, that must not be childs 
+        # label-encoded (initial) X columns on which interactions must be set: 
+            # 1st ancestors: 'age', 'race', 'sex', 'native-country'
+            # Then find 2nd ancestors? 'fnlwgt', 'education', 'education-num', 'capital-gain', 'capital-loss',
+            # 'hours-per-week', 'workclass', , 'marital-status',
+            # 'occupation', 'relationship'
+
         xgb_classif_params = {
             "seed": SEED,
             "objective": "binary:logistic",
@@ -89,7 +96,32 @@ def train_naive_xgb(
             "use_label_encoder": False,
         }
 
-        model = xgboost.XGBClassifier(**xgb_classif_params)
+        # TODO set "feature_interaction_census" as a separate option on the function
+        params_constrained = xgb_classif_params.copy()
+        # Use nested list to define feature interaction constraints: all interactions are enabled but not between 1st ancestors 
+            # e.g. where 'age' is an ancestor, following splits cannot be on 'race' or 'sex' (as these features are not caused by it)
+        
+        features_non_ancestors = ['fnlwgt', 'education', 'education-num', 'capital-gain', 'capital-loss',
+            'hours-per-week', 'workclass', 'marital-status','occupation', 'relationship']
+        
+        interaction_constraints = [
+        [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],#features_non_ancestors.append('age'),
+        [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],#features_non_ancestors.append('race'),
+        [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]],#features_non_ancestors.append('sex'),
+        [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13]]],#features_non_ancestors.append('native-country')]
+
+        # params_constrained['interaction_constraints'] = str(interaction_constraints)
+        # TODO rearrange the numbers, or associate more clearly features interactions with the features names 
+        params_constrained['interaction_constraints'] = '[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]]' # str(interaction_constraints)
+            # here , sex must have no interaction with either age, race, or native country 
+
+        #'[[0, 2], [1, 3, 4], [5, 6]]'
+        # Features 0 and 2 are allowed to interact with each other but with no other feature
+        # Features 1, 3, 4 are allowed to interact with one another but with no other feature
+        # Features 5 and 6 are allowed to interact with each other but with no other feature
+
+        # model = xgboost.XGBClassifier(**xgb_classif_params)
+        model = xgboost.XGBClassifier(**params_constrained)
 
         # map user's preferences of stat evaluation with xgboost eval_metrics for better training of the model
         if stat_criteria in {"auc", "aucpr"}:
