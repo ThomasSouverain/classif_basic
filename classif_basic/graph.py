@@ -5,20 +5,20 @@ import pandas as pd
 import torch
 from torch_geometric.data import Data
 
-def initialise_previous_edges(previous_edge_index:np.array)->np.array:
+def initialise_previous_edges(previous_edge:np.array)->np.array:
     """_summary_
 
     Args:
-        previous_edge_index (np.array): Array combining the indexes of couple of clients sharing attributes, of shape (2,nb_permutations_per_attribute_and_clients)
+        previous_edge (np.array): Array combining the couples of clients sharing attributes, of shape (2,nb_permutations_per_attribute_and_clients)
 
     Returns:
         np.array: initialise an empty index (or index with the previous edge values), enabling to add the new edges
     """
-    if previous_edge_index is None:
+    if previous_edge is None:
         previous_edges = np.array([], dtype=np.int32).reshape((0, 2))
     
-    elif previous_edge_index is not None:
-        previous_edges = previous_edge_index.transpose()
+    elif previous_edge is not None:
+        previous_edges = previous_edge.transpose()
     
     return previous_edges
 
@@ -40,12 +40,12 @@ def build_permutations_same_attribute(attribute_df:pd.DataFrame)->np.array:
 
     return clients_edges 
 
-def add_new_edge(data:pd.DataFrame, previous_edge_index:np.array, list_col_names:list)-> np.array: # with the list of columns to combine in the edge # TODO possible couples AND single features at the same time to create edges
+def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)-> np.array: # with the list of columns to combine in the edge # TODO possible couples AND single features at the same time to create edges
     """Based on 1 or 2 joint features, computes combinations of individuals with same attributes - to create connections as edges of a future data graph. 
 
     Args:
         data (pd.DataFrame): Dataset to be transformed in a graph
-        previous_edge_index (np.array): Array combining the indexes of couple of clients sharing attributes, of shape (2,nb_permutations_per_attribute_and_clients)
+        previous_edge (np.array): Array combining the couples of clients sharing attributes, of shape (2,nb_permutations_per_attribute_and_clients)
         list_col_names (List(str)): list with the names of the columns
             str: names of the columns, must be in a value in X.columns.
 
@@ -55,7 +55,7 @@ def add_new_edge(data:pd.DataFrame, previous_edge_index:np.array, list_col_names
     Returns:
         np.array: Array combining the indexes of couple of clients sharing the new attributes, i.e. common values of list_col_names
     """
-    previous_edges = initialise_previous_edges(previous_edge_index=previous_edge_index)
+    previous_edges = initialise_previous_edges(previous_edge=previous_edge)
 
     # first, reset IDs
     # to enable the computation of all combinations of clients sharing some attribute, i.e. column value (e.g. the same type of job)
@@ -102,7 +102,7 @@ def add_new_edge(data:pd.DataFrame, previous_edge_index:np.array, list_col_names
 
 # TODO enhance the function (and then include it in the package)
 
-def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list)->torch:
+def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None)->torch:
     """Transforms tabular data in a graph,
     From a given tabular pd.DataFrame separated in X and Y, and a list of features to connect them.
 
@@ -155,16 +155,19 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list)->torch:
     # then convert to torch, for further compatibility avec the torch GNN
     y = torch.from_numpy(y)
 
-    # TODO enhance connection between edges and graph creation (in the 2 functions)
-    previous_edge_index = None
-    data = X # TODO delete the name X to make graph from tabular data clearer (X_train, or X_valid...)? But what about Y?
-
-    # Extract the edges, know with our function to combine columns 
-    edges = add_new_edge(data=data, previous_edge_index=previous_edge_index, list_col_names=list_col_names)
+    # if the edges are not provided, extract the edges with our function to combine columns of "list_col_names"
+    if edges is None:
+        # TODO enhance connection between edges and graph creation (in the 2 functions)
+        previous_edge = None
+        data = X # TODO delete the name X to make graph from tabular data clearer (X_train, or X_valid...)? But what about Y?
+        edges = add_new_edge(data=data, previous_edge=previous_edge, list_col_names=list_col_names)
+    
     # then convert to torch, for further compatibility avec the torch GNN
     edge_index = torch.from_numpy(edges)
+    # and transform the edges indexes into int64, to enable forward propagation of GNN
+    edge_index = edge_index.long()
     
     # finally, build the graph (if other attributes e.g. edge_features, you can also pass it there)
-    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes)
+    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True)
     
     return data
