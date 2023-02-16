@@ -376,3 +376,46 @@ def new_dataset_column(
         # we add "nb" because we grouped individuals of the household meeting this criteria
         train_set["nb_" + criteria] = new_column
     return train_set
+
+def get_dict_relevant_corr(X:pd.DataFrame, Y:pd.DataFrame=None, target_name:str=None, threshold_relevant_corr:float=0.2, preprocessing_cat_features:str="label_encoding")->dict:
+    """From X (and Y as an option), generate the relevant correlations between features in a dict.
+    The user sets a threshold to sort the relevant correlations. 
+
+    Args:
+        X (pd.DataFrame): DataFrame with all inputs
+        Y (pd.DataFrame, optional): DataFrame with the ouptut. Defaults to None.
+        target_name (str, optional): Name of Y, as a key to find correlations with Y in the dict_relevant_corr. Must be specified if Y is passed. Defaults to None.
+        threshold_relevant_corr (float, optional): threshold to sort the relevant correlations. Defaults to 0.2.
+        preprocessing_cat_features (str, optional): how the categorical features are numerically transformed, to compute correlations. Defaults to "label_encoding".
+
+    Raises:
+        NotImplementedError: when the target name is not specified while Y is passed. Enabled to control for the key name of Y in the dict
+
+    Returns:
+        dict: the relevant (i.e. over the threshold_relevant_corr) correlations between features in a dict
+            Key: feature name, in X.columns or (if Y is passed) in [X.columns, target_name]
+            Value: pd.Series, of the format
+                (Correlated feature, correlation_value)
+
+    """
+    dict_relevant_corr = {}
+
+    dataset = handle_cat_features(X=X, preprocessing_cat_features=preprocessing_cat_features)
+    # print correlations with Y if Y is provided
+    if Y is not None:
+        if target_name is None:
+            raise NotImplementedError("By passing Y, you should specify the target_name (str) as a key to find correlations with Y in the dict_relevant_corr.")
+        dataset[target_name] = Y
+
+    dataset_corr = dataset.corr()
+    # apply the threshold to select only 'relevant' correlations between features
+    # will be used to reduce redundancy of features 
+    dataset_corr = dataset_corr.applymap(lambda x: round(x,2) if abs(x) >= threshold_relevant_corr else 0)
+
+    for feature in dataset_corr:
+        dataset_corr_transformed = dataset_corr.T[feature]
+        # eliminate both irrelevant (0) and redundant (1, i.e. the same feature) correlation
+        relevant_corrs = dataset_corr_transformed[(dataset_corr_transformed != 0)&(dataset_corr_transformed != 1)]
+        dict_relevant_corr[feature] = relevant_corrs 
+
+    return dict_relevant_corr
