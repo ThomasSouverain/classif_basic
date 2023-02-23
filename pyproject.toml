@@ -17,6 +17,8 @@ xgboost = "^1.5.2"
 shap = "^0.40.0"
 jupyter = "^1.0.0"
 torch = "^1.13.1"
+scipy = "^1.8.0"
+graphviz = "^0.20.1"
 torch-geometric = "^2.2.0"
 
 [tool.poetry.dev-dependencies]
@@ -29,10 +31,8 @@ coverage = "^5.5"
 pre-commit = "^2.14.0"
 black = "^21.7b0"
 reorder-python-imports = "^2.6.0"
-torch-sparse = "^0.6.16"
-torch-scatter = "^2.1.0"
 networkx = "^3.0"
-graphviz = "^0.20.1"
+tqdm = "^4.64.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
