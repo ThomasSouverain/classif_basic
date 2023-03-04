@@ -1,10 +1,12 @@
 import itertools
 import time
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
 from torch.nn import Linear
 from torch.nn import ReLU
 from torch_geometric.data import Data
@@ -12,13 +14,71 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.nn import GCNConv
 from torch_geometric.nn import Sequential
 
-class GCN(torch.nn.Module):
-    def __init__(self, data):
+from classif_basic.data_preparation import handle_cat_features
+
+class GCN(torch.nn.Module): 
+    """Class to generate a basic GCN with 2 convolutional layers.
+
+    Here intervenes the quick "introduction by example" of GCN by torch
+    in 'https://pytorch-geometric.readthedocs.io/en/latest/notes/introduction.html'
+
+    Methods:
+
+        __init__
+        Instantiates the basic GCN with 2 convolutional layers.
+            data (torch_geometric.data.Data): the dataset shaped in a graph form
+                data.x (torch.tensor): contains the input nodes (e.g. clients IDs)
+                    shape (data.num_nodes, data.num_nodes_features)
+                data.edge_index (torch.tensor): contains all the edges (i.e. adjacency matrix) joining the couples (2) of nodes
+                    shape (2, data.num_edges)
+                data.num_node_features (int): number of input nodes
+                data.num_classes (int): number of classes to be predicted (e.g. 2 for binary classification)
+
+        __forward__
+        Forward propagation for training of the basic GCN with 2 convolutional layers.
+            x: data.x
+            edge_index: data.edge_index
+        Must be passed independently of data, to enable to pass data.x (and not data.edge_index) 
+        to GPU device during training (in our function train_GNN)
+    """
+
+    def __init__(self, data:torch):
+        """Instantiates the basic GCN with 2 convolutional layers.
+
+        Args:
+            data.x (torch.tensor): contains the input nodes (e.g. clients IDs)
+                shape (nb_nodes, nb_nodes_features)
+            data.edge_index (torch.tensor): contains all the edges (i.e. adjacency matrix) joining the couples of nodes
+                shape (2, nb_edges)            
+        """
         super().__init__()
+
+        if data.num_node_features is None:
+            raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
+        if data.num_classes is None:
+            raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
+
         self.conv1 = GCNConv(data.num_node_features, 16)
         self.conv2 = GCNConv(16, data.num_classes)
 
-    def forward(self, x, edge_index):
+    def forward(self, x:torch, edge_index:torch)->torch:
+        """
+        Note: "backward" function is directly inherited from torch.nn.Module.
+
+        Args:
+            x: data.x
+                data.x (torch.tensor): contains the input nodes (e.g. clients IDs)
+                    shape (nb_nodes, nb_nodes_features)
+            edge_index: data.edge_index
+                data.edge_index (torch.tensor): contains all the edges (i.e. adjacency matrix) joining the couples of nodes
+                    shape (2, nb_edges)
+
+        x and edge_index must be passed independently of data, to enable to pass data.x (and not data.edge_index) 
+        to GPU device during training (in our function train_GNN)
+
+        Returns:
+            torch: signal of layers activation for forward propagation (through softmax)
+        """
 
         x = self.conv1(x, edge_index)
         x = F.relu(x)
@@ -122,24 +182,89 @@ def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)
 
     return edge_index
 
-# TODO enhance the function (and then include it in the package)
+def create_mask(X:pd.DataFrame, X_subset:pd.DataFrame)->torch.tensor:
+    """Creates a mask indicating if the row of X (future node of the graph data) is in the subset of X.
+    Will be used when transforming tabular data to graph, in order to keep the train/valid/test indices on graph data while GNN training.
 
-def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None, train_mask:bool=None)->torch:
+    Args:
+        X (pd.DataFrame):
+            DataFrame with all features (entered as columns) concerning individuals
+        X_subset (pd.DataFrame): 
+            Subset of X generated with the train/test/valid split
+
+    Returns:
+        torch.tensor: the subset mask, i.e. boolean tensor indicating if the individual is in X_subset
+    """
+    X_copy = X.copy()
+    X_copy.loc[X_subset.index, "mask"] = 1
+    X_copy["mask"] = X_copy["mask"].fillna(0).astype(bool)
+
+    mask = torch.tensor(X_copy['mask'].values)
+
+    return mask
+
+def train_valid_test_split_masks(X:pd.DataFrame, Y: pd.DataFrame, preprocessing_cat_features:str="label_encoding")->Tuple:
+    """To train a GNN model with cross-validation,
+    Splits data into train, valid, and test set -> get the train/valid/test indices in "masks" that will be passed to graph data 
+
+    Args:
+        X : pd.DataFrame
+            DataFrame with all features (entered as columns) concerning individuals
+        Y : pd.DataFrame
+            Target to be predicted by the model (1 column for binary classification: int in {0,1})
+        preprocessing_cat_features: str, by default "label_encoding"
+            Set the way categorial features are handled. 
+            Keep unique columns and replace their values by numbers ("label_encoding", taken by default), or create one column per feature's value ("one_hot_encoding").
+            Must be set to a value in {"label_encoding", "one_hot_encoding"}
+    Returns:
+        Tuple(torch.tensor): the 3 masks (train/valid/test)
+            E.g. train_mask is a boolean tensor indicating if the individual is in X_train
+    """
+
+    SEED = 7
+    VALID_SIZE = 0.15
+
+    X = handle_cat_features(X=X, preprocessing_cat_features=preprocessing_cat_features)
+
+    # Keep test values to ensure model is behaving properly
+    X_model, X_test, Y_model, Y_test = train_test_split(
+        X, Y, test_size=VALID_SIZE, random_state=SEED, stratify=Y # "stratify=Y" to keep the same proportion of target classes in train, valid and test sets
+    )
+
+    # Split valid set for early stopping & model selection
+    X_train, X_valid, Y_train, Y_valid = train_test_split(
+        X_model, Y_model, test_size=VALID_SIZE, random_state=SEED, stratify=Y_model
+    )
+
+    # get the masks corresponding to train/valid/test samples, to keep the train/valid/test indices on graph data while GNN training
+    train_mask = create_mask(X=X, X_subset=X_train)
+    valid_mask = create_mask(X=X, X_subset=X_valid)
+    test_mask = create_mask(X=X, X_subset=X_test)
+
+    return train_mask, valid_mask, test_mask
+
+
+def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None)->torch:
     """Transforms tabular data in a graph,
     From a given tabular pd.DataFrame separated in X and Y, and a list of features to connect them.
 
     Args:
         X (pd.DataFrame): Tabular Dataset (without the target)
         Y (pd.DataFrame): Tabular Dataset (target)
-        list_col_names (List(str)): list with the names of the columns
+        list_col_names (List(str)): list with the names of the columns that are used as node features (=> not as edges, for the moment)
             str: names of the columns, must be in a value in X.columns.
-        train_mask (bool), by default None: boolean tensor indicating if the individual is in X_train
+        mask (bool), by default None: boolean tensor indicating if the individual is in X_train
             Must be specified if the graph will be transformed into mini-batches (for faster computing) through sample-neighborhood
 
     Returns:
-        torch_geometric.data.data.Data: graph of the previous tabular data, connected with the features of list_col_names
+        torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_col_names
     """
     
+    # train/valid/test split: keep the train/valid/test indices (masks) on graph data for future GNN training
+    train_mask, valid_mask, test_mask = train_valid_test_split_masks(
+        X=X,
+        Y=Y)
+
     #Make sure that we have no duplicate nodes
     assert(X.index.unique().shape[0] == X.shape[0])
     
@@ -192,20 +317,72 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
     edge_index = edge_index.long()
     
     # finally, build the graph (if other attributes e.g. edge_features, you can also pass it there)
-    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, train_mask=train_mask)
+    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, 
+                train_mask=train_mask, valid_mask=valid_mask, test_mask=test_mask)
     
     return data
 
-def train_GNN(
-    data_total,
-    loader_method,
-    batch_size = 32,
-    epoch_nb = 35,
-    learning_rate = 0.001,
-    nb_neighbors_per_sample = 30,
-    nb_iterations_per_neighbors = 2):
+def check_attributes_graph_data(data:torch):
+    """Check if the graph data have all the required attributes for our GCN training (with the function train_GNN).
 
-    print(f"{data_total.train_mask.size} training examples \n")
+    Args:
+        data (torch_geometric.data.Data): the dataset in a graph 
+    """
+    if data.x is None:
+        raise AttributeError("The x 'data.x', must be specified to build the GCN."
+                             "\n data.x must be a torch tensor of shape (data.num_nodes, data.num_features)"
+                             "\n For clients binary classification, data.x might be (nb_clients, nb_features not used as edges)")
+    if data.edge_index is None:
+        raise AttributeError("The edge_index 'data.edge_index', must be specified to build the GCN."
+                             "\n data.edge_index must be a torch tensor of shape (2, num_edges),"
+                             "\n adjacency matrix connecting the couples of nodes (e.g. clients sharing the same type of job and hours per week)")
+    if data.y is None:
+        raise AttributeError("The target 'data.y', must be specified to build the GCN."
+                             "\n data.y must be a torch tensor of shape (data.num_nodes, data.num_classes-1)"
+                             "\n For clients binary classification, data.y might be (0, ..., 1) of shape (nb_clients)")
+    if data.num_classes is None:
+        raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
+    if data.num_node_features is None:
+        raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
+    if data.train_mask is None:
+        raise AttributeError("The mask 'data.train_mask', must be specified to build the GCN."
+                             "\n data.train_mask must be a boolean tensor of shape (data.num_nodes), indicating if the node is used for training")
+    if data.valid_mask is None:
+        raise AttributeError("The valid_mask 'data.valid_mask', must be specified to build the GCN."
+                             "\n data.valid_mask must be a boolean tensor of shape (data.num_nodes), indicating if the node is used for validation during GNN training")
+    if data.test_mask is None:
+        raise AttributeError("The test_mask 'data.test_mask', must be specified."
+                             "\n data.test_mask must be a boolean tensor of shape (data.num_nodes), indicating if the node is used for testing the model on unseen data graph")
+
+    return 
+
+def train_GNN(
+    data_total:torch,
+    loader_method:str,
+    batch_size:int = 32,
+    epoch_nb:int = 35,
+    learning_rate:float = 0.001,
+    nb_neighbors_per_sample:int = 30,
+    nb_iterations_per_neighbors:int = 2)->GCN:
+    """_summary_
+
+    Args:
+        data_total (torch_geometric.data.Data): the whole dataset in a graph 
+            Must have the attributes 
+        loader_method (str): _description_
+        batch_size (int, optional): _description_. Defaults to 32.
+        epoch_nb (int, optional): _description_. Defaults to 35.
+        learning_rate (float, optional): _description_. Defaults to 0.001.
+        nb_neighbors_per_sample (int, optional): _description_. Defaults to 30.
+        nb_iterations_per_neighbors (int, optional): _description_. Defaults to 2.
+
+    Returns:
+        GCN: _description_
+    """
+
+    # first of all, check if data_total entails all the attributes for our GNN batch training
+    check_attributes_graph_data(data_total)
+
     print(f"\n Construction of the loader with {batch_size} batches and the method {loader_method}") 
     # TODO internal function to build the loaders
         # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
@@ -252,16 +429,18 @@ def train_GNN(
             edge_index=data.edge_index.to(device)
             target = data.y.to(device)
             preds = classifier(x=x.float(), edge_index=edge_index)
-            err = loss(preds, target)
+            error_train = loss(preds[data.train_mask], target[data.train_mask])
             _, preds_temp = torch.max(preds.data, 1)
-            total += len(target)
-            correct += (preds_temp == target).sum().item()
-            epoch_loss += err.item()
-            err.backward()
+            total = total + len(target)
+            correct = correct + (preds_temp == target).sum().item()
+            epoch_loss = epoch_loss + error_train.item()
+            error_train.backward()
             optimizer.step()
+
         print(f'Epoch {epoch + 1} Loss = {epoch_loss/(i+1)} Train Accuracy = {correct / total}') 
 
     t_basic_2 = time.time()            
-    print(f"Training of the basic GCN on Census with {batch_size} batches and {epoch_nb} epochs took {(t_basic_2 - t_basic_1)/60} mn")
+
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {batch_size} batches and {epoch_nb} epochs took {(t_basic_2 - t_basic_1)/60} mn")
 
     return classifier
