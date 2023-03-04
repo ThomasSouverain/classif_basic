@@ -1,4 +1,51 @@
-# classif_basic
+# classif_basic with GPU
+
+Here, the package accesses GPU (if present) to make the computation of models (e.g. graphs, see "notebooks/data_census_graph_tests.ipynb").
+To activate the GPU on your computer with docker:
+
+## Install NVIDIA
+(!) implies to already have installed NVIDIA'. If you have a GPU and must install NVIDIA, there is a [process](https://www.linuxcapable.com/install-nvidia-drivers-on-ubuntu-linux/):
+
+    sudo apt update
+    sudo apt upgrade
+    sudo apt autoremove && sudo apt autoclean
+    sudo apt-get remove --purge '^nvidia-.*'
+    lspci | grep -e VGA
+    sudo apt install nvidia-driver-my_version (e.g. nvidia-driver-525)
+    reboot
+    
+*If* a package blocks the installation, make:
+
+    sudo dpkg --remove --force-all package_name
+    
+And, if the package can still not be removed:
+
+    sudo rm /var/lib/dpkg/info/package_name.prerm
+    
+*If* problem of "unmet dependencies", make:
+
+    sudo apt-add-repository -r ppa:graphics-drivers/ppa
+
+*.. And do again the steps above*
+
+## First activation of GPU with the package
+If it is the first time you activate the GPU (and you have installed NVIDIA):
+
+    cd project_name (e.g. classif_basic)
+    
+create / replace your Dockerfile_gpu with [this content](https://pastebin.com/fD0VQrUD)
+
+    sudo rm -rf .cache
+    make install-gpu
+    make start-gpu
+    make notebook
+
+## Usual launching of notebook with GPU 
+For the other times, normal launching of a jupyter notebook with your GPU activated:
+
+    cd project_name (e.g. classif_basic)
+    make start-gpu
+    make notebook
 
 On basic binary and multi-classification, and on regression (see the notebooks for application), this package provides scripts to accelerate:
 
