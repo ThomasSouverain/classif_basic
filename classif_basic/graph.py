@@ -1,9 +1,31 @@
 import itertools
+import time
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
+from torch.nn import Linear
+from torch.nn import ReLU
 from torch_geometric.data import Data
+from torch_geometric.loader import NeighborLoader
+from torch_geometric.nn import GCNConv
+from torch_geometric.nn import Sequential
+
+class GCN(torch.nn.Module):
+    def __init__(self, data):
+        super().__init__()
+        self.conv1 = GCNConv(data.num_node_features, 16)
+        self.conv2 = GCNConv(16, data.num_classes)
+
+    def forward(self, x, edge_index):
+
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = F.dropout(x, training=self.training)
+        x = self.conv2(x, edge_index)
+        
+        return F.log_softmax(x, dim=1)
 
 def initialise_previous_edges(previous_edge:np.array)->np.array:
     """_summary_
@@ -102,7 +124,7 @@ def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)
 
 # TODO enhance the function (and then include it in the package)
 
-def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None)->torch:
+def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None, train_mask:bool=None)->torch:
     """Transforms tabular data in a graph,
     From a given tabular pd.DataFrame separated in X and Y, and a list of features to connect them.
 
@@ -111,6 +133,8 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
         Y (pd.DataFrame): Tabular Dataset (target)
         list_col_names (List(str)): list with the names of the columns
             str: names of the columns, must be in a value in X.columns.
+        train_mask (bool), by default None: boolean tensor indicating if the individual is in X_train
+            Must be specified if the graph will be transformed into mini-batches (for faster computing) through sample-neighborhood
 
     Returns:
         torch_geometric.data.data.Data: graph of the previous tabular data, connected with the features of list_col_names
@@ -168,6 +192,76 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
     edge_index = edge_index.long()
     
     # finally, build the graph (if other attributes e.g. edge_features, you can also pass it there)
-    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True)
+    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, train_mask=train_mask)
     
     return data
+
+def train_GNN(
+    data_total,
+    loader_method,
+    batch_size = 32,
+    epoch_nb = 35,
+    learning_rate = 0.001,
+    nb_neighbors_per_sample = 30,
+    nb_iterations_per_neighbors = 2):
+
+    print(f"{data_total.train_mask.size} training examples \n")
+    print(f"\n Construction of the loader with {batch_size} batches and the method {loader_method}") 
+    # TODO internal function to build the loaders
+        # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
+    loader = NeighborLoader(
+        data_total,
+        # Sample 30 neighbors for each node for 2 iterations
+        num_neighbors=[nb_neighbors_per_sample] * nb_iterations_per_neighbors,
+        # Use a batch size of 128 for sampling training nodes
+        batch_size=batch_size,
+        input_nodes=data_total.train_mask,
+    )
+
+    t_basic_1 = time.time()
+
+    # activate and signal the use of GPU for faster processing
+    if torch.cuda.is_available():    
+        print("Using GPU!")    
+        device = torch.device("cuda")
+        # torch.set_default_tensor_type('torch.cuda.FloatTensor')   
+    else:    
+        print("Using CPU!")       
+        device = torch.device("cpu")
+
+    # initialize the structure of the classifier, and prepare for GNN training (with GPU)
+    classifier = GCN(data_total).to(device)
+
+    # classifier = GraphClassifier(v_in=71, e_in=6, v_g=30, e_g=6, v_out=200, mc_out=22, i_types=11).float().to(device)
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
+    loss = torch.nn.CrossEntropyLoss()
+
+    print('starting training')
+    classifier.train()
+
+    for epoch in range(epoch_nb):
+        
+        epoch_loss = 0
+        total = 0
+        correct = 0
+        classifier.train()
+        for i, data in enumerate(loader):
+            optimizer.zero_grad()
+            data = data.to(device)
+            x = data.x.to(device)
+            edge_index=data.edge_index.to(device)
+            target = data.y.to(device)
+            preds = classifier(x=x.float(), edge_index=edge_index)
+            err = loss(preds, target)
+            _, preds_temp = torch.max(preds.data, 1)
+            total += len(target)
+            correct += (preds_temp == target).sum().item()
+            epoch_loss += err.item()
+            err.backward()
+            optimizer.step()
+        print(f'Epoch {epoch + 1} Loss = {epoch_loss/(i+1)} Train Accuracy = {correct / total}') 
+
+    t_basic_2 = time.time()            
+    print(f"Training of the basic GCN on Census with {batch_size} batches and {epoch_nb} epochs took {(t_basic_2 - t_basic_1)/60} mn")
+
+    return classifier
