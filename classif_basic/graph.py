@@ -61,7 +61,8 @@ class GCN(torch.nn.Module):
         self.conv1 = GCNConv(data.num_node_features, 16)
         self.conv2 = GCNConv(16, data.num_classes)
 
-    def forward(self, x:torch, edge_index:torch)->torch:
+    def forward(self, data:torch, device:torch.device)->torch: # TODO adapt docstring if it works 
+    # def forward(self, x:torch, edge_index:torch)->torch:
         """
         Note: "backward" function is directly inherited from torch.nn.Module.
 
@@ -80,12 +81,30 @@ class GCN(torch.nn.Module):
             torch: signal of layers activation for forward propagation (through softmax)
         """
 
+        x = data.x.float().to(device)
+        edge_index=data.edge_index.to(device)
+
         x = self.conv1(x, edge_index)
         x = F.relu(x)
         x = F.dropout(x, training=self.training)
         x = self.conv2(x, edge_index)
         
         return F.log_softmax(x, dim=1)
+
+def activate_gpu()->torch.device:
+    """Activate and signal the use of GPU for faster processing
+
+    Returns (torch.device):
+        Activated device for GNN computation, using either GPU or CPU
+    """
+    if torch.cuda.is_available():    
+        print("Using GPU!")    
+        device = torch.device("cuda")
+    else:    
+        print("Using CPU!")       
+        device = torch.device("cpu")
+    return device
+
 
 def initialise_previous_edges(previous_edge:np.array)->np.array:
     """_summary_
@@ -203,15 +222,18 @@ def create_mask(X:pd.DataFrame, X_subset:pd.DataFrame)->torch.tensor:
 
     return mask
 
-def train_valid_test_split_masks(X:pd.DataFrame, Y: pd.DataFrame, preprocessing_cat_features:str="label_encoding")->Tuple:
+def train_valid_split_mask(X_model:pd.DataFrame, Y_model: pd.DataFrame, preprocessing_cat_features:str="label_encoding")->Tuple:
     """To train a GNN model with cross-validation,
-    Splits data into train, valid, and test set -> get the train/valid/test indices in "masks" that will be passed to graph data 
+    Splits data into train/valid set -> get the train/valid indices in "masks" that will be passed to graph data
+    (!) must exclude the test samples 
 
     Args:
-        X : pd.DataFrame
-            DataFrame with all features (entered as columns) concerning individuals
-        Y : pd.DataFrame
+        X_model : pd.DataFrame
+            DataFrame with all features (entered as columns) concerning individuals,
+            Which will be used for training (!) must exclude the test samples
+        Y_model : pd.DataFrame
             Target to be predicted by the model (1 column for binary classification: int in {0,1})
+            Which will be used for training (!) must exclude the test samples
         preprocessing_cat_features: str, by default "label_encoding"
             Set the way categorial features are handled. 
             Keep unique columns and replace their values by numbers ("label_encoding", taken by default), or create one column per feature's value ("one_hot_encoding").
@@ -224,24 +246,19 @@ def train_valid_test_split_masks(X:pd.DataFrame, Y: pd.DataFrame, preprocessing_
     SEED = 7
     VALID_SIZE = 0.15
 
-    X = handle_cat_features(X=X, preprocessing_cat_features=preprocessing_cat_features)
-
-    # Keep test values to ensure model is behaving properly
-    X_model, X_test, Y_model, Y_test = train_test_split(
-        X, Y, test_size=VALID_SIZE, random_state=SEED, stratify=Y # "stratify=Y" to keep the same proportion of target classes in train, valid and test sets
-    )
+    X_model = handle_cat_features(X=X_model, preprocessing_cat_features=preprocessing_cat_features)
 
     # Split valid set for early stopping & model selection
+    # "stratify=Y" to keep the same proportion of target classes in train and valid sets 
     X_train, X_valid, Y_train, Y_valid = train_test_split(
         X_model, Y_model, test_size=VALID_SIZE, random_state=SEED, stratify=Y_model
     )
 
     # get the masks corresponding to train/valid/test samples, to keep the train/valid/test indices on graph data while GNN training
-    train_mask = create_mask(X=X, X_subset=X_train)
-    valid_mask = create_mask(X=X, X_subset=X_valid)
-    test_mask = create_mask(X=X, X_subset=X_test)
+    train_mask = create_mask(X=X_model, X_subset=X_train)
+    valid_mask = create_mask(X=X_model, X_subset=X_valid)
 
-    return train_mask, valid_mask, test_mask
+    return train_mask, valid_mask
 
 
 def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None)->torch:
@@ -260,10 +277,10 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
         torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_col_names
     """
     
-    # train/valid/test split: keep the train/valid/test indices (masks) on graph data for future GNN training
-    train_mask, valid_mask, test_mask = train_valid_test_split_masks(
-        X=X,
-        Y=Y)
+    # train/valid split: keep the train/valid indices (masks) on graph data for future GNN training
+    train_mask, valid_mask = train_valid_split_mask(
+        X_model=X,
+        Y_model=Y)
 
     #Make sure that we have no duplicate nodes
     assert(X.index.unique().shape[0] == X.shape[0])
@@ -318,7 +335,7 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
     
     # finally, build the graph (if other attributes e.g. edge_features, you can also pass it there)
     data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, 
-                train_mask=train_mask, valid_mask=valid_mask, test_mask=test_mask)
+                train_mask=train_mask, valid_mask=valid_mask)
     
     return data
 
@@ -350,9 +367,6 @@ def check_attributes_graph_data(data:torch):
     if data.valid_mask is None:
         raise AttributeError("The valid_mask 'data.valid_mask', must be specified to build the GCN."
                              "\n data.valid_mask must be a boolean tensor of shape (data.num_nodes), indicating if the node is used for validation during GNN training")
-    if data.test_mask is None:
-        raise AttributeError("The test_mask 'data.test_mask', must be specified."
-                             "\n data.test_mask must be a boolean tensor of shape (data.num_nodes), indicating if the node is used for testing the model on unseen data graph")
 
     return 
 
@@ -398,18 +412,9 @@ def train_GNN(
     t_basic_1 = time.time()
 
     # activate and signal the use of GPU for faster processing
-    if torch.cuda.is_available():    
-        print("Using GPU!")    
-        device = torch.device("cuda")
-        # torch.set_default_tensor_type('torch.cuda.FloatTensor')   
-    else:    
-        print("Using CPU!")       
-        device = torch.device("cpu")
-
+    device = activate_gpu()
     # initialize the structure of the classifier, and prepare for GNN training (with GPU)
     classifier = GCN(data_total).to(device)
-
-    # classifier = GraphClassifier(v_in=71, e_in=6, v_g=30, e_g=6, v_out=200, mc_out=22, i_types=11).float().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
     loss = torch.nn.CrossEntropyLoss()
 
@@ -418,29 +423,78 @@ def train_GNN(
 
     for epoch in range(epoch_nb):
         
-        epoch_loss = 0
+        epoch_loss_train = 0
+        epoch_loss_valid = 0
         total = 0
         correct = 0
         classifier.train()
-        for i, data in enumerate(loader):
+        for i, data in enumerate(loader): # try to pass only data (and device to compute in the adapted format)
             optimizer.zero_grad()
             data = data.to(device)
-            x = data.x.to(device)
-            edge_index=data.edge_index.to(device)
             target = data.y.to(device)
-            preds = classifier(x=x.float(), edge_index=edge_index)
+            preds = classifier(data=data, device=device)
+            # compute train loss
             error_train = loss(preds[data.train_mask], target[data.train_mask])
+            epoch_loss_train = epoch_loss_train + error_train.item()
+            # compute valid loss
+            error_valid = loss(preds[data.valid_mask], target[data.valid_mask])
+            epoch_loss_valid = epoch_loss_valid + error_valid.item()
+            # compute overall train&valid accuracy
             _, preds_temp = torch.max(preds.data, 1)
             total = total + len(target)
             correct = correct + (preds_temp == target).sum().item()
-            epoch_loss = epoch_loss + error_train.item()
+            # retropropagate train loss
             error_train.backward()
             optimizer.step()
 
-        print(f'Epoch {epoch + 1} Loss = {epoch_loss/(i+1)} Train Accuracy = {correct / total}') 
+        print(f"Epoch {epoch + 1} Loss_train = {round(epoch_loss_train/(i+1),2)} Loss_valid = {round(epoch_loss_valid/(i+1),2)}"
+              f" Train & Valid Accuracy = {round(correct / total, 2)}") 
+
+        # TODO plot the scores across the epochs 
 
     t_basic_2 = time.time()            
 
-    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {batch_size} batches and {epoch_nb} epochs took {(t_basic_2 - t_basic_1)/60} mn")
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {batch_size} batches and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
 
     return classifier
+
+def evaluate_gnn(classifier:GCN, data_test:torch, loss_name:str="cross_entropy"):
+    """Computes the loss and accuracy of a given GCN classifier on test data
+
+    Args:
+        classifier (GCN): already trained GCN classifier (!) must not have been trained on data_test
+        data_test (torch): new graph-data to evaluate the GCN
+            Must have the same attributes (feature nodes, edges...) than data used for GNN training.
+        loss_name (str, optional): type of loss the user wants to compute on test data. Defaults to "cross_entropy".
+    """
+
+    # first of all, check if data_test shares the attributes of the data-graph (data_total) used for our GNN batch training
+    check_attributes_graph_data(data_test)
+
+    # set the loss (for the moment, cross_entropy by default) TODO extend to other losses 
+    if loss_name == "cross_entropy":
+        print("Loss is measured through cross entropy")
+        loss = torch.nn.CrossEntropyLoss()
+
+    device = activate_gpu()
+
+    #classifier = classifier.to(device)
+    classifier.eval()
+
+    data_test = data_test.to(device)
+    target = data_test.y.to(device)
+
+    preds = classifier(data=data_test, device=device)
+
+    error_test = loss(preds, target)
+    print(f"\nError on test: {error_test:.4f} \n")
+
+    # compute overall train&valid accuracy
+    _, preds_temp = torch.max(preds.data, 1)
+    total = len(target)
+    correct = (preds_temp == target).sum().item()
+    print(f"Test Accuracy = {round(correct / total, 2)}") 
+
+    # TODO compute and plot ROC-AUC
+
+    return
