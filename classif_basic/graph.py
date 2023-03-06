@@ -98,10 +98,10 @@ def activate_gpu()->torch.device:
         Activated device for GNN computation, using either GPU or CPU
     """
     if torch.cuda.is_available():    
-        print("Using GPU!")    
+        print("\n Using GPU!")    
         device = torch.device("cuda")
     else:    
-        print("Using CPU!")       
+        print("\n Using CPU!")       
         device = torch.device("cpu")
     return device
 
@@ -339,6 +339,57 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
     
     return data
 
+def get_loader(
+    data_total:torch,
+    loader_method:str,
+    batch_size:int = 32,
+    num_neighbors:int = 30,
+    nb_iterations_per_neighbors:int = 2)->torch:
+    """Returns the data split in batches of subgraphs for faster GNN training, with the chosen sampling method.
+
+    Args:
+        data_total (torch_geometric.data.Data): the whole dataset in a graph 
+            Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
+        loader_method (str): name of the method to build the batch
+            Must be set to a value in {'neighbor_nodes'}
+        batch_size (int, optional): number of batches in which data will be split for faster GNN training. Defaults to 32.
+
+        if loader_method == 'neighbor_nodes':
+            num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
+            nb_iterations_per_neighbors (int, optional): number of iterations of the loader to find the 'similar' nodes. Defaults to 2.
+
+    Returns:
+        torch_geometric.loader: data split in batches of subgraphs for faster GNN training
+    """
+
+    # first of all, check if data_total entails all the attributes to constitute the batches 
+    check_attributes_graph_data(data_total)
+
+    t_loader_1 = time.time()
+
+    if loader_method == 'neighbor_nodes':
+        print(f"\n Construction of the loader with {batch_size} batches and the method {loader_method}") 
+        # TODO internal function to build the loaders
+            # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
+        loader = NeighborLoader(
+            data_total,
+            # Sample 30 neighbors for each node for 2 iterations
+            num_neighbors=[num_neighbors] * nb_iterations_per_neighbors,
+            # Use a batch size of 128 for sampling training nodes
+            batch_size=batch_size,
+            input_nodes=data_total.train_mask,
+        )
+
+    else:
+        raise NotImplementedError("The way you want to build batches to train the GCN is not implemented."
+                                  "Must be set to a value in {'neighbor_nodes'}")
+
+    t_loader_2 = time.time()            
+
+    print(f"\n Loading the data in {batch_size} batches took {round((t_loader_2 - t_loader_1)/60)} mn")
+
+    return loader
+
 def check_attributes_graph_data(data:torch):
     """Check if the graph data have all the required attributes for our GCN training (with the function train_GNN).
 
@@ -374,40 +425,39 @@ def train_GNN(
     data_total:torch,
     loader_method:str,
     batch_size:int = 32,
-    epoch_nb:int = 35,
+    epoch_nb:int = 5,
     learning_rate:float = 0.001,
-    nb_neighbors_per_sample:int = 30,
+    num_neighbors:int = 30,
     nb_iterations_per_neighbors:int = 2)->GCN:
-    """_summary_
+    """Train a basic GNN over data_total (which must contain a train mask and a valid mask), with the chosen batch method.
+    The batch (loader) method enables to split the data in batches of subgraphs, for faster GNN training.
 
     Args:
         data_total (torch_geometric.data.Data): the whole dataset in a graph 
-            Must have the attributes 
-        loader_method (str): _description_
-        batch_size (int, optional): _description_. Defaults to 32.
-        epoch_nb (int, optional): _description_. Defaults to 35.
-        learning_rate (float, optional): _description_. Defaults to 0.001.
-        nb_neighbors_per_sample (int, optional): _description_. Defaults to 30.
-        nb_iterations_per_neighbors (int, optional): _description_. Defaults to 2.
+            Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
+        loader_method (str): name of the method to build the batch
+            Must be set to a value in {'neighbor_nodes'}
+        batch_size (int, optional): number of batches in which data will be split for faster GNN training. Defaults to 32.
+        epoch_nb (int, optional): number of times the model gets trained on train_data. Defaults to 5.
+        learning_rate (float, optional): rapidity of the gradient descent. Defaults to 0.001.
+
+        if loader_method == 'neighbor_nodes':
+            num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
+            nb_iterations_per_neighbors (int, optional): number of iterations of the loader to find the 'similar' nodes. Defaults to 2.
 
     Returns:
-        GCN: _description_
+        GCN: model of our class GCN(torch.nn.Module), trained on the train set of data_total
     """
 
     # first of all, check if data_total entails all the attributes for our GNN batch training
     check_attributes_graph_data(data_total)
 
-    print(f"\n Construction of the loader with {batch_size} batches and the method {loader_method}") 
-    # TODO internal function to build the loaders
-        # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
-    loader = NeighborLoader(
-        data_total,
-        # Sample 30 neighbors for each node for 2 iterations
-        num_neighbors=[nb_neighbors_per_sample] * nb_iterations_per_neighbors,
-        # Use a batch size of 128 for sampling training nodes
-        batch_size=batch_size,
-        input_nodes=data_total.train_mask,
-    )
+    # then, split the data into batches for GNN training - load the data with the chosen batch method
+    loader = get_loader(data_total=data_total, 
+                        loader_method=loader_method,
+                        batch_size=batch_size,
+                        num_neighbors=num_neighbors,
+                        nb_iterations_per_neighbors=nb_iterations_per_neighbors)
 
     t_basic_1 = time.time()
 
@@ -418,7 +468,7 @@ def train_GNN(
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
     loss = torch.nn.CrossEntropyLoss()
 
-    print('starting training')
+    print('\n Training Start \n')
     classifier.train()
 
     for epoch in range(epoch_nb):
