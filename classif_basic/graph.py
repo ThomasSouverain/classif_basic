@@ -91,6 +91,53 @@ class GCN(torch.nn.Module):
         
         return F.log_softmax(x, dim=1)
 
+class GCN_ancestor(torch.nn.Module):
+    # test a Sequential model - which will then respect the order between layer 1 and layer 2
+    # reasoning: neural network => causal "productive" influence of layer 1 on layer 2
+    # TODO doc if it works 
+    def __init__(self, data):
+        super().__init__()
+
+        if data.num_node_features is None:
+            raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
+        if data.num_classes is None:
+            raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
+
+        self.conv1 = GCNConv(data.num_node_features, 16)
+        self.conv2 = GCNConv(16, data.num_classes)
+        # add layer to pass the child edges
+        self.conv_init = GCNConv(16, data.num_node_features)
+
+    def forward(self, x, x_child, edge_index, edge_index_child, device): 
+
+        x = x.float().to(device)
+        x_child = x_child.float().to(device)
+        edge_index=edge_index.to(device)
+        edge_index_child=edge_index_child.to(device)
+
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = F.dropout(x, training=self.training)
+
+        print(x.shape)        
+        
+        #x = self.conv_init(x, edge_index_child)
+        #x = F.relu(x)
+
+        x = self.conv2(x, edge_index_child)
+        # # shape the 'parent' layer to pass the 'child' edges
+        # x = self.conv_init(x, edge_index)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)        
+        # # same with adding 'child edge' (e.g. work, child of sex) in the layer
+        # x = self.conv1(x, edge_index_child)
+        # x = F.relu(x)
+        # x = F.dropout(x, training=self.training)        
+        
+        # x = self.conv2(x, edge_index_child)
+        
+        return F.log_softmax(x, dim=1)
+
 def activate_gpu()->torch.device:
     """Activate and signal the use of GPU for faster processing
 
