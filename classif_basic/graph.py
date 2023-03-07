@@ -138,6 +138,66 @@ class GCN_ancestor(torch.nn.Module):
         
         return F.log_softmax(x, dim=1)
 
+class GCN_ancestor_edges(torch.nn.Module):
+    # TODO pass data each time a causal child is added -> really scalable? Test it on large data, and improve it ; investigate philosophical basis 
+    # test a Sequential model - which will then respect the order between layer 1 and layer 2
+    # reasoning: neural network => causal "productive" influence of layer 1 on layer 2
+    # TODO doc if it works 
+    def __init__(self, data):
+        super().__init__()
+
+        if data.num_node_features is None:
+            raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
+        if data.num_classes is None:
+            raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
+
+        self.conv1 = GCNConv(data.num_node_features, 16)
+        # intermediate convolutions when adding node features (descendant graph-data)
+        self.conv2 = GCNConv(data.num_node_features+1, 16) # TODO initialize these layers with the exact nb of node features computed here -> pass data_childs to __init__()
+        self.conv3 = GCNConv(data.num_node_features+2, 16)
+        self.conv_end = GCNConv(16, data.num_classes)
+
+    def forward(self, x_parent, x_child1, x_child2, x_final_descendants, edge_index_parent, edge_index_child1, edge_index_child2, edge_index_final_descendants, device): 
+
+        x_parent = x_parent.float().to(device)
+        x_child1 = x_child1.float().to(device)
+        x_child2 = x_child2.float().to(device)
+        x_final_descendants = x_final_descendants.float().to(device)
+
+        edge_index_parent=edge_index_parent.to(device)
+        edge_index_child1=edge_index_child1.to(device)
+        edge_index_child2=edge_index_child2.to(device)
+        edge_index_final_descendants = edge_index_final_descendants.to(device)
+
+        # layer 1: only causal parent information (e.g. edge = "sex")
+        x_parent = self.conv1(x_parent, edge_index_parent)
+        print(f"shape of x_parent after convolution: {x_parent.shape} \n")        
+        x = F.relu(x_parent)
+        x = F.dropout(x, training=self.training)
+
+        # layer 2: "add" causal descendant information through child1 edge (e.g. "sex" -> "education")
+        x_child1 = self.conv2(x_child1, edge_index_child1) + x + x_parent # add the shortcut to not erase the ascendance of parent edge (cause: x_parent built with only parent edge)
+        print(f"shape of x_child1 after convolution: {x_child1.shape} \n")        
+        x = F.relu(x_child1)
+        x = F.dropout(x, training=self.training)
+  
+        # layer 3: "add" causal descendant information through child2 edge (e.g. "education" -> "job")
+        x_child2 = self.conv3(x_child2, edge_index_child2) + x + x_child1 # add the shortcut to not erase the ascendance of child1 edge (cause: x_parent built with only parent edge)
+        print(f"shape of x_child2 after convolution: {x_child2.shape} \n")        
+        x = F.relu(x_child2)
+        x = F.dropout(x, training=self.training)
+
+        # last convolutional layer: finish with all the "final descendant" features -> for more powerful computation
+        # layer 4: link with the final descendant (e.g. "job" -> "hours of work per week")
+        x_final_descendants = self.conv2(x_final_descendants, edge_index_final_descendants) + x + x_child1 + x_child2 # conv2 because 3 node features (!) TODO define explicitly in __init__() TODO only pass nb, not full date (to enhance computation)
+        print(f"shape of x_final_descendants after convolution: {x_final_descendants.shape} \n")        
+        x = F.relu(x_final_descendants)
+        x = F.dropout(x, training=self.training)
+
+        x = self.conv_end(x, edge_index_final_descendants)
+
+        return F.log_softmax(x, dim=1)
+
 def activate_gpu()->torch.device:
     """Activate and signal the use of GPU for faster processing
 
