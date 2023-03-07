@@ -91,53 +91,6 @@ class GCN(torch.nn.Module):
         
         return F.log_softmax(x, dim=1)
 
-class GCN_ancestor(torch.nn.Module):
-    # test a Sequential model - which will then respect the order between layer 1 and layer 2
-    # reasoning: neural network => causal "productive" influence of layer 1 on layer 2
-    # TODO doc if it works 
-    def __init__(self, data):
-        super().__init__()
-
-        if data.num_node_features is None:
-            raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
-        if data.num_classes is None:
-            raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
-
-        self.conv1 = GCNConv(data.num_node_features, 16)
-        self.conv2 = GCNConv(16, data.num_classes)
-        # add layer to pass the child edges
-        self.conv_init = GCNConv(16, data.num_node_features)
-
-    def forward(self, x, x_child, edge_index, edge_index_child, device): 
-
-        x = x.float().to(device)
-        x_child = x_child.float().to(device)
-        edge_index=edge_index.to(device)
-        edge_index_child=edge_index_child.to(device)
-
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-
-        print(x.shape)        
-        
-        #x = self.conv_init(x, edge_index_child)
-        #x = F.relu(x)
-
-        x = self.conv2(x, edge_index_child)
-        # # shape the 'parent' layer to pass the 'child' edges
-        # x = self.conv_init(x, edge_index)
-        # x = F.relu(x)
-        # x = F.dropout(x, training=self.training)        
-        # # same with adding 'child edge' (e.g. work, child of sex) in the layer
-        # x = self.conv1(x, edge_index_child)
-        # x = F.relu(x)
-        # x = F.dropout(x, training=self.training)        
-        
-        # x = self.conv2(x, edge_index_child)
-        
-        return F.log_softmax(x, dim=1)
-
 class GCN_ancestor_edges(torch.nn.Module):
     # TODO pass data each time a causal child is added -> really scalable? Test it on large data, and improve it ; investigate philosophical basis 
     # test a Sequential model - which will then respect the order between layer 1 and layer 2
@@ -195,6 +148,77 @@ class GCN_ancestor_edges(torch.nn.Module):
         x = F.dropout(x, training=self.training)
 
         x = self.conv_end(x, edge_index_final_descendants)
+
+        return F.log_softmax(x, dim=1)
+
+class GCN_ancestor(torch.nn.Module):
+    '''Train a GNN by passing multiple (successive) data-graphs, progressively integrating new features.
+    - data are directly passed for training as initialization of the layers, instead of x and edge_index (vs GCN_ancestor_edge which will try to be lighter)
+    - which makes possible loading for GNN training with large data? 
+    But not very scalable (each causal descendant + last layer with all features => add a new graph to the loader...)
+    '''
+    # TODO pass data each time a causal child is added -> really scalable? Test it on large data, and improve it ; investigate philosophical basis 
+    # test a Sequential model - which will then respect the order between layer 1 and layer 2
+    # reasoning: neural network => causal "productive" influence of layer 1 on layer 2
+    # TODO doc if it works 
+    def __init__(self, list_data):
+        super().__init__()
+
+        # idea: insert in a list convolutional function for every graph-data, 
+        # as with with a new graph-data the input shape may change (adding new features, feature nodes shape is changing)
+        list_conv_fcts = []
+
+        for i, data in enumerate(list_data):
+
+            if data.num_node_features is None:
+                raise AttributeError("The number of node features 'data.num_node_features' must be specified to build the GCN.")
+            if data.num_classes is None:
+                raise AttributeError("The number of classes 'data.num_classes' must be specified to build the GCN.")
+
+            conv = GCNConv(data.num_node_features, 16)
+            list_conv_fcts.append(conv)
+
+        self.list_conv_fcts = list_conv_fcts
+
+        self.conv_end = GCNConv(16, data.num_classes)
+
+    def forward(self, list_data, device): 
+
+        # layer 1: only causal parent information (e.g. edge = "sex")
+        # layer 2: "add" causal descendant information through child1 edge (e.g. "sex" -> "education")
+        # layer 3: "add" causal descendant information through child2 edge (e.g. "education" -> "job")
+        # ... until last convolutional layer: finish with all the "final descendant" features -> for more powerful computation
+        # layer 4: link with the final descendant (e.g. "job" -> "hours of work per week")
+        # (!) do not pass too many layers (else, GNN over-smoothing problem)
+
+        # for all graph-data, pass its (shape-fitted) convolutional function
+        # and add previous parent information as shortcuts <=> do not erase the previous parent information
+        new_x_parents = 0
+        
+        for i, data in enumerate(list_data):
+            print(f"\n Layer with causal ascendance {i} \n")
+            data = data.to(device)
+            x = data.x.float().to(device)
+            edge_index=data.edge_index.to(device)
+
+            print(f"shape of x before convolution: {x.shape} \n")        
+
+            print(f"forward device : {device}")
+
+            x = self.list_conv_fcts[i](x, edge_index) + new_x_parents # add the shortcut of previous parents
+            print(f"shape of x after convolution: {x.shape} \n")        
+            x = F.relu(x)
+            x = F.dropout(x, training=self.training)
+
+            # add the child(n) as parent of child (n+1) for futher shortcuts
+            new_x_parents = new_x_parents + x
+
+        # last convolutional layer with the last child data
+        data_end_childs = list_data[-1]
+        x_end_childs = data_end_childs.x.float().to(device)
+        edge_index_end_childs = data_end_childs.edge_index.to(device)
+
+        x = self.conv_end(x_end_childs, edge_index_end_childs)
 
         return F.log_softmax(x, dim=1)
 
@@ -595,6 +619,96 @@ def train_GNN(
             epoch_loss_train = epoch_loss_train + error_train.item()
             # compute valid loss
             error_valid = loss(preds[data.valid_mask], target[data.valid_mask])
+            epoch_loss_valid = epoch_loss_valid + error_valid.item()
+            # compute overall train&valid accuracy
+            _, preds_temp = torch.max(preds.data, 1)
+            total = total + len(target)
+            correct = correct + (preds_temp == target).sum().item()
+            # retropropagate train loss
+            error_train.backward()
+            optimizer.step()
+
+        print(f"Epoch {epoch + 1} Loss_train = {round(epoch_loss_train/(i+1),2)} Loss_valid = {round(epoch_loss_valid/(i+1),2)}"
+              f" Train & Valid Accuracy = {round(correct / total, 2)}") 
+
+        # TODO plot the scores across the epochs 
+
+    t_basic_2 = time.time()            
+
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {batch_size} batches and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
+
+    return classifier
+
+def train_GNN_ancestor(
+    list_data_total:torch,
+    loader_method:str,
+    batch_size:int = 32,
+    epoch_nb:int = 5,
+    learning_rate:float = 0.001,
+    num_neighbors:int = 30,
+    nb_iterations_per_neighbors:int = 2)->GCN:
+    """Train a GNN adapted to progressive integration of causal descendants, i.e. new graph-data through GCN_ancestor() layers
+
+    I foresee 2 methods: 
+        (1) get a loader_i for all graph-data -> split batches into successive loaders (e.g. loader_parent: batches 1-15, loader_child: batches 15-30...)
+            Each time, get the 15 "best" batches (couples of neighbors)? May lead to promising results (as not constituted with the same edges)
+            Then, pass them to "normal" GCN
+        (2) OR iterate over several loaders -> pass them into GNC_ancestor... But is it possible to iterate over a n-uplet of loaders? To be, or not to be...
+
+    Here, we try the method (2)...
+        
+    TODO doc if it works 
+    """
+    list_loader = []
+    for data_total in list_data_total:
+
+        # first of all, check if data_total entails all the attributes for our GNN batch training
+        check_attributes_graph_data(data_total)
+
+        # then, split the data into batches for GNN training - load the data with the chosen batch method
+        loader = get_loader(data_total=data_total, 
+                            loader_method=loader_method,
+                            batch_size=batch_size,
+                            num_neighbors=num_neighbors,
+                            nb_iterations_per_neighbors=nb_iterations_per_neighbors)
+        list_loader.append(loader)
+
+    t_basic_1 = time.time()
+
+    # activate and signal the use of GPU for faster processing
+    device = activate_gpu()
+    # initialize the structure of the classifier, and prepare for GNN training (with GPU)
+    classifier = GCN_ancestor(list_data_total).to(device)
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
+    loss = torch.nn.CrossEntropyLoss()
+
+    print('\n Training Start \n')
+    classifier.train()
+
+    # as it will be necessary for training, fix stable train/valid indexes (which will not change with data-graphs)
+    # arbitrarily, we choose the mask of the last child graph - as nodes == indivs keep the same number, it will not change the results
+    train_mask = list_data_total[-1].train_mask
+    valid_mask = list_data_total[-1].valid_mask
+    # same, target (income) is required and will not change by adding features 
+    target = list_data_total[-1].y.to(device)
+
+    for epoch in range(epoch_nb):
+        
+        epoch_loss_train = 0
+        epoch_loss_valid = 0
+        total = 0
+        correct = 0
+        classifier.train()
+
+        for i, list_data in enumerate(list_loader): # try to pass only data (and device to compute in the adapted format)
+            optimizer.zero_grad()
+            # data = data.to(device) TODO delete as useless? See after GNN training...
+            preds = classifier(list_data=list_data, device=device)
+            # compute train loss
+            error_train = loss(preds[train_mask], target[train_mask])
+            epoch_loss_train = epoch_loss_train + error_train.item()
+            # compute valid loss
+            error_valid = loss(preds[valid_mask], target[valid_mask])
             epoch_loss_valid = epoch_loss_valid + error_valid.item()
             # compute overall train&valid accuracy
             _, preds_temp = torch.max(preds.data, 1)
