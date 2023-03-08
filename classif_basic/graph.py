@@ -201,14 +201,12 @@ class GCN_ancestor(torch.nn.Module):
         new_x_parents = 0
         
         for i, data in enumerate(list_data[:-1]): # loop for the (n) first ancestor data
-            print(f"\n Layer with causal ascendance {i+1} \n")
+            print(f"\n Layer with causal ascendance {i+1} : ")
             data = data.to(device)
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
 
-            print(f"shape of x before convolution: {x.shape} \n")        
-
-            print(f"forward device : {device}")
+            print(f"shape of x before convolution: {x.shape} ; ")        
 
             x = self.conv1(x, edge_index) #+ new_x_parents # add the shortcut of previous parents
             # x = self.list_conv_fcts[i](x, edge_index) + new_x_parents # add the shortcut of previous parents
@@ -219,7 +217,7 @@ class GCN_ancestor(torch.nn.Module):
             # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
             # new_x_parents = new_x_parents + x
 
-        print(f"\n Last Child Layer \n")
+        print(f"||| Last Child Layer : ")
         # last convolutional layer with the last child data (n) (i.e. the last data_end_childs registered)
         data_end_childs = list_data[-1]
         x_end_childs = data_end_childs.x.float().to(device)
@@ -495,7 +493,7 @@ def get_loader(
             Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
         loader_method (str): name of the method to build the batch
             Must be set to a value in {'neighbor_nodes'}
-        batch_size (int, optional): number of batches in which data will be split for faster GNN training. Defaults to 32.
+        batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to 32.
 
         if loader_method == 'neighbor_nodes':
             num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
@@ -511,7 +509,7 @@ def get_loader(
     t_loader_1 = time.time()
 
     if loader_method == 'neighbor_nodes':
-        print(f"\n Construction of the loader with {batch_size} batches and the method {loader_method}") 
+        print(f"\n Construction of the loader with batches of {batch_size} individuals and the method {loader_method}") 
         # TODO internal function to build the loaders
             # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
         loader = NeighborLoader(
@@ -580,7 +578,7 @@ def train_GNN(
             Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
         loader_method (str): name of the method to build the batch
             Must be set to a value in {'neighbor_nodes'}
-        batch_size (int, optional): number of batches in which data will be split for faster GNN training. Defaults to 32.
+        batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to 32.
         epoch_nb (int, optional): number of times the model gets trained on train_data. Defaults to 5.
         learning_rate (float, optional): rapidity of the gradient descent. Defaults to 0.001.
 
@@ -706,7 +704,8 @@ def train_GNN_ancestor(
         classifier.train()
 
         i=0
-        for batch_parent, batch_child in product(list_loader[0], list_loader[1]): # TODO handle if the number of data-graph (i.e. len(list_loader) is not known)
+        for batch_parent, batch_child in zip(list_loader[0], list_loader[1]): # TODO handle if the number of data-graph (i.e. len(list_loader) is not known)
+            print(f"Training Batch {i+1} \n")
             list_data = [batch_parent, batch_child]
             optimizer.zero_grad()
             # data = data.to(device) TODO delete as useless? See after GNN training...
@@ -736,9 +735,11 @@ def train_GNN_ancestor(
 
         # TODO plot the scores across the epochs 
 
-    t_basic_2 = time.time()            
+    t_basic_2 = time.time()  
 
-    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {batch_size} batches and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
+    nb_indivs_total = data_total.x.shape[0]          
+
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {round(nb_indivs_total/batch_size)} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
 
     return classifier
 
