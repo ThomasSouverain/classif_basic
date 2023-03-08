@@ -1,5 +1,6 @@
 import itertools
 import time
+from itertools import product
 from typing import Tuple
 
 import numpy as np
@@ -181,8 +182,12 @@ class GCN_ancestor(torch.nn.Module):
         self.list_conv_fcts = list_conv_fcts
 
         self.conv_end = GCNConv(16, data.num_classes)
+        # temporary check: OK if conv layer initialized?
+        self.conv1 = GCNConv(data.num_node_features, 16)
 
     def forward(self, list_data, device): 
+
+        # TODO delete temporary diminutions (self.conv1 -> uniquely specify "self"?, no shortcut through new_x_parent -> broadcast?)
 
         # layer 1: only causal parent information (e.g. edge = "sex")
         # layer 2: "add" causal descendant information through child1 edge (e.g. "sex" -> "education")
@@ -195,8 +200,8 @@ class GCN_ancestor(torch.nn.Module):
         # and add previous parent information as shortcuts <=> do not erase the previous parent information
         new_x_parents = 0
         
-        for i, data in enumerate(list_data):
-            print(f"\n Layer with causal ascendance {i} \n")
+        for i, data in enumerate(list_data[:-1]): # loop for the (n) first ancestor data
+            print(f"\n Layer with causal ascendance {i+1} \n")
             data = data.to(device)
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
@@ -205,19 +210,26 @@ class GCN_ancestor(torch.nn.Module):
 
             print(f"forward device : {device}")
 
-            x = self.list_conv_fcts[i](x, edge_index) + new_x_parents # add the shortcut of previous parents
+            x = self.conv1(x, edge_index) #+ new_x_parents # add the shortcut of previous parents
+            # x = self.list_conv_fcts[i](x, edge_index) + new_x_parents # add the shortcut of previous parents
             print(f"shape of x after convolution: {x.shape} \n")        
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
 
-            # add the child(n) as parent of child (n+1) for futher shortcuts
-            new_x_parents = new_x_parents + x
+            # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
+            # new_x_parents = new_x_parents + x
 
-        # last convolutional layer with the last child data
+        print(f"\n Last Child Layer \n")
+        # last convolutional layer with the last child data (n) (i.e. the last data_end_childs registered)
         data_end_childs = list_data[-1]
         x_end_childs = data_end_childs.x.float().to(device)
         edge_index_end_childs = data_end_childs.edge_index.to(device)
 
+        x_end_childs = self.conv1(x_end_childs, edge_index_end_childs) #+ new_x_end_childs_parents # add the shortcut of previous parents
+        # x_end_childs = self.list_conv_fcts[i](x_end_childs, edge_index_end_childs) + new_x_end_childs_parents # add the shortcut of previous parents
+        print(f"shape of x_end_childs after convolution: {x_end_childs.shape} \n")        
+        x_end_childs = F.relu(x_end_childs)
+        x_end_childs = F.dropout(x_end_childs, training=self.training)
         x = self.conv_end(x_end_childs, edge_index_end_childs)
 
         return F.log_softmax(x, dim=1)
@@ -685,13 +697,6 @@ def train_GNN_ancestor(
     print('\n Training Start \n')
     classifier.train()
 
-    # as it will be necessary for training, fix stable train/valid indexes (which will not change with data-graphs)
-    # arbitrarily, we choose the mask of the last child graph - as nodes == indivs keep the same number, it will not change the results
-    train_mask = list_data_total[-1].train_mask
-    valid_mask = list_data_total[-1].valid_mask
-    # same, target (income) is required and will not change by adding features 
-    target = list_data_total[-1].y.to(device)
-
     for epoch in range(epoch_nb):
         
         epoch_loss_train = 0
@@ -700,15 +705,22 @@ def train_GNN_ancestor(
         correct = 0
         classifier.train()
 
-        for i, list_data in enumerate(list_loader): # try to pass only data (and device to compute in the adapted format)
+        i=0
+        for batch_parent, batch_child in product(list_loader[0], list_loader[1]): # TODO handle if the number of data-graph (i.e. len(list_loader) is not known)
+            list_data = [batch_parent, batch_child]
             optimizer.zero_grad()
             # data = data.to(device) TODO delete as useless? See after GNN training...
             preds = classifier(list_data=list_data, device=device)
             # compute train loss
-            error_train = loss(preds[train_mask], target[train_mask])
+            # (!) TODO think about the training target: 
+            # as the last layer is evaluated on the last batch (here, batch_child)
+            # and batch_child had the more complete set of information (nb_features, causal messages), we choose its targets and masks for error measurement
+            target = batch_child.y.to(device)
+            error_train = loss(preds[batch_child.train_mask], target[batch_child.train_mask])
+            epoch_loss_train = epoch_loss_train + error_train.item()
             epoch_loss_train = epoch_loss_train + error_train.item()
             # compute valid loss
-            error_valid = loss(preds[valid_mask], target[valid_mask])
+            error_valid = loss(preds[batch_child.valid_mask], target[batch_child.valid_mask])
             epoch_loss_valid = epoch_loss_valid + error_valid.item()
             # compute overall train&valid accuracy
             _, preds_temp = torch.max(preds.data, 1)
@@ -717,6 +729,7 @@ def train_GNN_ancestor(
             # retropropagate train loss
             error_train.backward()
             optimizer.step()
+            i=i+1
 
         print(f"Epoch {epoch + 1} Loss_train = {round(epoch_loss_train/(i+1),2)} Loss_valid = {round(epoch_loss_valid/(i+1),2)}"
               f" Train & Valid Accuracy = {round(correct / total, 2)}") 
