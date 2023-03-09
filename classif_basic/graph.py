@@ -17,6 +17,7 @@ from torch_geometric.nn import GCNConv
 from torch_geometric.nn import Sequential
 
 from classif_basic.data_preparation import handle_cat_features
+from classif_basic.loader import IndexLoader
 
 class GCN(torch.nn.Module): 
     """Class to generate a basic GCN with 2 convolutional layers.
@@ -513,7 +514,18 @@ def get_loader(
 
     t_loader_1 = time.time()
 
-    if loader_method == 'neighbor_nodes':
+    if loader_method == 'index_groups':
+        print(f"\n Construction of the loader with batches of {nb_batches} batches and the method {loader_method}") 
+        loader = IndexLoader(
+            data_total=data_total,
+            nb_batches=nb_batches,
+            persistent_workers=5,
+            num_workers=5,
+        )
+
+        # loader.get_successive_node_indices()
+
+    elif loader_method == 'neighbor_nodes':
         print(f"\n Construction of the loader with batches of {batch_size} individuals and the method {loader_method}") 
         # TODO internal function to build the loaders
             # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
@@ -532,7 +544,7 @@ def get_loader(
 
     t_loader_2 = time.time()            
 
-    print(f"\n Loading the data in {batch_size} batches took {round((t_loader_2 - t_loader_1)/60)} mn")
+    print(f"\n Loading the data in batches of {batch_size} individuals took {round((t_loader_2 - t_loader_1)/60)} mn")
 
     return loader
 
@@ -567,12 +579,20 @@ def check_attributes_graph_data(data:torch):
 
     return 
 
-def check_data_GNN_training(list_data_total:torch, list_loader:list):
-    # first, check that data are passed, loaded (list_loader) or only in full-size graph format (list_data_total)
-    if list_data_total is None and list_loader is None:
-        raise NotImplementedError("You must pass data for GNN training, either in full-size graph format (list_data_total) or already splitted and loaded (list_loader)")
+def check_batch_info(data_total:torch, batch_size:int, nb_batches:int)->tuple:
+    # check that valid batch information is passed, and complete the information on batches (size of splits, number of individual per splits)
+    if batch_size is not None:
+        nb_indivs_total = data_total.x.shape[0]        
+        batch_size = int(nb_indivs_total*batch_size)        
 
-    return
+    elif nb_batches is not None:
+        nb_indivs_total = data_total.x.shape[0]        
+        batch_size = int(nb_indivs_total/nb_batches)
+
+    else:
+        raise NotImplementedError("For GNN training on large data, you must specify either the size of splits (batch_size) or the number of individuals per split (nb_batches)")
+
+    return batch_size, nb_batches
 
 def train_GNN(
     data_total:torch,
@@ -662,9 +682,8 @@ def train_GNN(
     return classifier
 
 def train_GNN_ancestor(
-    list_data_total:torch = None,
-    list_loader:list = None,
-    loader_method:str = 'index_groups',
+    list_data_total:torch,
+    loader_method:str,
     batch_size:int = 32,
     epoch_nb:int = 5,
     learning_rate:float = 0.001,
@@ -683,35 +702,24 @@ def train_GNN_ancestor(
         
     TODO doc if it works 
     """
-
     # first, check that data are passed, either already splitted in batches (list_loader) or only in full-size graph format (list_data_total)
-    check_data_GNN_training(list_data_total=list_data_total, list_loader=list_loader)
+    # and complete the missing information (size of the batches / nb of batches)
+    batch_size, nb_batches = check_batch_info(data_total=list_data_total[0], batch_size=batch_size, nb_batches=nb_batches)
 
-    if loader_method == 'index_groups': # TODO pass it into get_loader? But with index method, full data is already splitted and loaded...
-        print(f"With the loader method {loader_method}, each data-graph is already splitted and loaded in {nb_batches} batches\n '''Getting list of loaders'''")
-        # get a list_data_total of 1st batch-data -> will be used only to initialize GCN_ancestor()
-        list_data_partial = [parent_child_couple_batch for parent_child_couple_batch in zip(list_loader[0], list_loader[1])][0]
-        list_data_total = list_data_partial # TODO reconstitute data total? Seems not useful 
+    list_loader = []
+    for data_total in list_data_total:
 
-    elif loader_method == 'neighbor_nodes':
+        # check if data_total entails all the attributes for our GNN batch training
+        check_attributes_graph_data(data_total)
 
-        list_loader = []
-        for data_total in list_data_total:
-
-            # first of all, check if data_total entails all the attributes for our GNN batch training
-            check_attributes_graph_data(data_total)
-
-            # then, split the data into batches for GNN training - load the data with the chosen batch method
-            loader = get_loader(data_total=data_total, 
-                                loader_method=loader_method,
-                                batch_size=batch_size,
-                                num_neighbors=num_neighbors,
-                                nb_iterations_per_neighbors=nb_iterations_per_neighbors)
-            list_loader.append(loader)
-    
-    else:
-        raise NotImplementedError("The way you want to build batches to train the GCN is not implemented."
-                                  "Must be set to a value in {'neighbor_nodes, 'index_groups'}")
+        # then, split the data into batches for GNN training - load the data with the chosen batch method
+        loader = get_loader(data_total=data_total, 
+                            loader_method=loader_method,
+                            batch_size=batch_size,
+                            num_neighbors=num_neighbors,
+                            nb_iterations_per_neighbors=nb_iterations_per_neighbors,
+                            nb_batches=nb_batches)
+        list_loader.append(loader)
 
     t_basic_1 = time.time()
 
@@ -854,13 +862,13 @@ def index_loader(
     list_df_split = [df.iloc[n:n+batch_size] for n in range(nb_batches)]
 
     for i, df_group_index in enumerate(list_df_split):
-        print(f"Loading batch {i} grouping individuals {df_group_index.index}")
+        print(f"Loading batch {i}")# grouping individuals {df_group_index.index}")
         X_group_index = df_group_index.drop("target", axis=1)
         Y_group_index = df_group_index["target"]
 
         batch = table_to_graph(X=X_group_index, Y=Y_group_index, list_col_names=list_col_names, edges=edges)
-        # then load the batch for faster computation
-        batch = DataLoader(batch)
+        # TODO then load the batch for faster computation?
+        # batch = DataLoader(batch)
 
         list_batches.append(batch)
     
