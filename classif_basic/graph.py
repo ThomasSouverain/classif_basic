@@ -219,7 +219,7 @@ class GCN_ancestor(torch.nn.Module):
             # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
             # new_x_parents = new_x_parents + x
 
-        print(f"||| Last Child Layer : ")
+        print(f"Last Child Layer : ")
         # last convolutional layer with the last child data (n) (i.e. the last data_end_childs registered)
         data_end_childs = list_data[-1]
         x_end_childs = data_end_childs.x.float().to(device)
@@ -485,10 +485,10 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
 def get_loader(
     data_total:torch,
     loader_method:str,
-    batch_size:int = 32,
+    batch_size:int = 150,
+    nb_batches:int = 300,
     num_neighbors:int = 30,
-    nb_iterations_per_neighbors:int = 2,
-    nb_batches:int = 4)->torch:
+    nb_iterations_per_neighbors:int = 2)->torch:
     """Returns the data split in batches of subgraphs for faster GNN training, with the chosen sampling method.
 
     Args:
@@ -514,26 +514,20 @@ def get_loader(
 
     t_loader_1 = time.time()
 
+    print(f"\n Construction of the loader with {nb_batches} batches of {batch_size} individuals and the method {loader_method}") 
+
     if loader_method == 'index_groups':
-        print(f"\n Construction of the loader with batches of {nb_batches} batches and the method {loader_method}") 
         loader = IndexLoader(
             data_total=data_total,
             nb_batches=nb_batches,
-            persistent_workers=5,
-            num_workers=5,
         )
 
-        # loader.get_successive_node_indices()
-
     elif loader_method == 'neighbor_nodes':
-        print(f"\n Construction of the loader with batches of {batch_size} individuals and the method {loader_method}") 
-        # TODO internal function to build the loaders
-            # test different batch construction to enforce causal hierarchy -> mini-graphs, neighborhoods...
         loader = NeighborLoader(
             data_total,
-            # Sample 30 neighbors for each node for 2 iterations
+            # E.g. Sample 30 neighbors for each node for 2 iterations
             num_neighbors=[num_neighbors] * nb_iterations_per_neighbors,
-            # Use a batch size of 128 for sampling training nodes
+            # E.g. Use a batch size of 128 for sampling training nodes
             batch_size=batch_size,
             input_nodes=data_total.train_mask,
         )
@@ -684,12 +678,12 @@ def train_GNN(
 def train_GNN_ancestor(
     list_data_total:torch,
     loader_method:str,
-    batch_size:int = 32,
+    batch_size:int = 150,
+    nb_batches:int = 300,
     epoch_nb:int = 5,
     learning_rate:float = 0.001,
     num_neighbors:int = 30,
-    nb_iterations_per_neighbors:int = 2,
-    nb_batches:int = 4)->GCN:
+    nb_iterations_per_neighbors:int = 2)->GCN:
     """Train a GNN adapted to progressive integration of causal descendants, i.e. new graph-data through GCN_ancestor() layers
 
     I foresee 2 methods: 
@@ -768,16 +762,14 @@ def train_GNN_ancestor(
             optimizer.step()
             i=i+1
 
-        print(f"Epoch {epoch + 1} Loss_train = {round(epoch_loss_train/(i+1),2)} Loss_valid = {round(epoch_loss_valid/(i+1),2)}"
-              f" Train & Valid Accuracy = {round(correct / total, 2)}") 
+        print(f"||| Epoch {epoch + 1} Loss_train = {round(epoch_loss_train/(i+1),2)} Loss_valid = {round(epoch_loss_valid/(i+1),2)}"
+              f" Train & Valid Accuracy = {round(correct / total, 2)}\n") 
 
         # TODO plot the scores across the epochs 
 
     t_basic_2 = time.time()  
 
-    nb_indivs_total = data_total.x.shape[0]          
-
-    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {round(nb_indivs_total/batch_size)} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {nb_batches} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
 
     return classifier
 
