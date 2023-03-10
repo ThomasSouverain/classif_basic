@@ -1,3 +1,4 @@
+import itertools
 import time
 
 import torch
@@ -128,17 +129,21 @@ def train_GNN_ancestor(
 
         i=0
 
-        # TODO handle if the number of data-graph (i.e. len(list_loader) is not known)
-        for batch_parent, batch_child in zip(list_loader[0], list_loader[1]): 
-            print(f"Training Batch {i+1} \n")
-            list_data = [batch_parent, batch_child]
+        for batch in list_loader:
+            print(f"Training Batch {i+1} of unique graph\n")
+            list_data = list(batch)
+
+
+        # for batch_tuple in itertools.zip_longest(*tuple(list_loader)): 
+        #     print(f"Training Batch {i+1} \n")
+        #     list_data = list(batch_tuple)
             optimizer.zero_grad()
-            # data = data.to(device) TODO delete as useless? See after GNN training...
             preds = classifier(list_data=list_data, device=device)
             # compute train metrics
             # (!) TODO think about the training target: 
             # as the last layer is evaluated on the last batch (here, batch_child)
             # and batch_child had the more complete set of information (nb_features, causal messages), we choose its targets and masks for error measurement
+            batch_child = list_data[-1]
             target = batch_child.y.to(device)
             error_train = get_loss(loss_name=loss_name, 
                                     probas_pred=preds[batch_child.train_mask], 
