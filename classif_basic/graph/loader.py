@@ -146,7 +146,7 @@ def get_loader(
 def index_loader(
     X:pd.DataFrame, 
     Y:pd.DataFrame, 
-    list_col_names:list, 
+    list_edges_names:list, 
     edges: np.array=None,
     nb_batches:int = 4):
     """Manually split large data in the desired number of batches, splitting the individuals by index order.
@@ -187,7 +187,7 @@ def index_loader(
         X_group_index = df_group_index.drop("target", axis=1)
         Y_group_index = df_group_index["target"]
 
-        batch = table_to_graph(X=X_group_index, Y=Y_group_index, list_col_names=list_col_names, edges=edges)
+        batch = table_to_graph(X=X_group_index, Y=Y_group_index, list_edges_names=list_edges_names, edges=edges)
         # TODO then load the batch for faster computation?
         # batch = DataLoader(batch)
 

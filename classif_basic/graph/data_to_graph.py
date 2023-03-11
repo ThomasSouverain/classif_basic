@@ -44,20 +44,20 @@ def build_permutations_same_attribute(attribute_df:pd.DataFrame)->np.array:
 
     return clients_edges 
 
-def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)-> np.array: # with the list of columns to combine in the edge # TODO possible couples AND single features at the same time to create edges
+def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_edges_names:list)-> np.array: # with the list of columns to combine in the edge # TODO possible couples AND single features at the same time to create edges
     """Based on 1 or 2 joint features, computes combinations of individuals with same attributes - to create connections as edges of a future data graph. 
 
     Args:
         data (pd.DataFrame): Dataset to be transformed in a graph
         previous_edge (np.array): Array combining the couples of clients sharing attributes, of shape (2,nb_permutations_per_attribute_and_clients)
-        list_col_names (List(str)): list with the names of the columns
+        list_edges_names (List(str)): list with the names of the columns that will be added as edges (if [feat1, feat2], will be directed edge from feat1->feat2)
             str: names of the columns, must be in a value in X.columns.
 
     Raises:
         NotImplementedError: if the user wants to combine more than 2 features to create connections between clients
 
     Returns:
-        np.array: Array combining the indexes of couple of clients sharing the new attributes, i.e. common values of list_col_names
+        np.array: Array combining the indexes of couple of clients sharing the new attributes, i.e. common values of list_edges_names
     """
     previous_edges = initialise_previous_edges(previous_edge=previous_edge)
 
@@ -65,9 +65,9 @@ def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)
     # to enable the computation of all combinations of clients sharing some attribute, i.e. column value (e.g. the same type of job)
     data["clients_id"] = data.reset_index().index
 
-    if len(list_col_names)==1: # when a unique feature is chosen to form an edge
+    if len(list_edges_names)==1: # when a unique feature is chosen to form an edge
 
-        col_name = list_col_names[0]
+        col_name = list_edges_names[0]
         attribute_values = data[col_name].unique()
 
         for attribute in attribute_values:
@@ -77,13 +77,13 @@ def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)
             # complete with each new attribute (e.g. new type of job), to get all couples of clients with the same attribute
             previous_edges = np.vstack([previous_edges, clients_edges]) 
     
-    elif len(list_col_names) == 2: # for the moment, maximum combination of 2 columns to create an edge
+    elif len(list_edges_names) == 2: # for the moment, maximum combination of 2 columns to create an edge
     
     # TODO join if too many categories (e.g. hours of work per week)
     # else, 1050 combinations of types of jobs and hours per week - a bit hard to compute
     # and irrelevant (mini-categories of clients as edges)...
-        col_1 = list_col_names[0]
-        col_2 = list_col_names[1]
+        col_1 = list_edges_names[0]
+        col_2 = list_edges_names[1]
             
         combinations_vals_cols_1_to_2 = np.array(np.meshgrid(data[col_1].unique(), data[col_2].unique())).T.reshape(-1,2)
 
@@ -94,7 +94,7 @@ def add_new_edge(data:pd.DataFrame, previous_edge:np.array, list_col_names:list)
             previous_edges = np.vstack([previous_edges, clients_edges]) 
     
     else:
-        raise NotImplementedError("The maximum number of features you specify in list_col_names to create an edge must be 2.")
+        raise NotImplementedError("The maximum number of features you specify in list_edges_names to create an edge must be 2.")
 
     # Convert to Pytorch Geometric format
     edge_index = previous_edges.transpose()
@@ -164,20 +164,20 @@ def train_valid_split_mask(X_model:pd.DataFrame, Y_model: pd.DataFrame, preproce
     return train_mask, valid_mask
 
 
-def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: np.array=None)->torch:
+def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges: np.array=None)->torch:
     """Transforms tabular data in a graph,
     From a given tabular pd.DataFrame separated in X and Y, and a list of features to connect them.
 
     Args:
         X (pd.DataFrame): Tabular Dataset (without the target)
         Y (pd.DataFrame): Tabular Dataset (target)
-        list_col_names (List(str)): list with the names of the columns that are used as node features (=> not as edges, for the moment)
+        list_edges_names (List(str)): list with the names of the columns that are used as edges (=> not as node features for the moment)
             str: names of the columns, must be in a value in X.columns.
         mask (bool), by default None: boolean tensor indicating if the individual is in X_train
             Must be specified if the graph will be transformed into mini-batches (for faster computing) through sample-neighborhood
 
     Returns:
-        torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_col_names
+        torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_edges_names
     """
     
     # train/valid split: keep the train/valid indices (masks) on graph data for future GNN training
@@ -196,7 +196,7 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
         # The node features are typically represented in a matrix of the shape (num_nodes, node_feature_dim).
         # For each of the bank clients, we simply extract their attributes (except here the "occupation", that would be used as an "actionable" edge to connect them)
     list_X_cols = X.columns.to_list()
-    list_nodes_names = [col for col in list_X_cols if col not in list_col_names]
+    list_nodes_names = [col for col in list_X_cols if col not in list_edges_names]
     node_features = X[list_nodes_names]
         # That's already our node feature matrix. The number of nodes and the ordering is implicitly defined by it's shape. Each row corresponds to one node in our final graph. 
     
@@ -224,12 +224,12 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_col_names:list, edges: n
     # then convert to torch, for further compatibility avec the torch GNN
     y = torch.from_numpy(y)
 
-    # if the edges are not provided, extract the edges with our function to combine columns of "list_col_names"
+    # if the edges are not provided, extract the edges with our function to combine columns of "list_edges_names"
     if edges is None:
         # TODO enhance connection between edges and graph creation (in the 2 functions)
         previous_edge = None
         data = X # TODO delete the name X to make graph from tabular data clearer (X_train, or X_valid...)? But what about Y?
-        edges = add_new_edge(data=data, previous_edge=previous_edge, list_col_names=list_col_names)
+        edges = add_new_edge(data=data, previous_edge=previous_edge, list_edges_names=list_edges_names)
     
     # then convert to torch, for further compatibility avec the torch GNN
     edge_index = torch.from_numpy(edges)
