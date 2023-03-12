@@ -173,7 +173,7 @@ class GCN_ancestor(torch.nn.Module):
         # temporary check: OK if conv layer initialized?
         self.conv1 = GCNConv(data.num_node_features, 16)
 
-    def forward(self, list_data, device): 
+    def forward(self, list_data, device, skip_connection): 
 
         # TODO delete temporary diminutions (self.conv1 -> uniquely specify "self"?, no shortcut through new_x_parent -> broadcast?)
 
@@ -187,33 +187,36 @@ class GCN_ancestor(torch.nn.Module):
         # for all graph-data, pass its (shape-fitted) convolutional function
         # and add previous parent information as shortcuts <=> do not erase the previous parent information
         new_x_parents = 0
-        
+    
         for i, data in enumerate(list_data[:-1]): # loop for the (n) first ancestor data
-            print(f"\n Layer with causal ascendance {i+1} : ")
+            # print(f"\n Layer with causal ascendance {i+1} : ")
             data = data.to(device)
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
 
-            print(f"shape of x before convolution: {x.shape} ; ")        
+            # print(f"shape of x before convolution: {x.shape} ; ") 
+            # print(f"shape of new_x_parents before convolution: {new_x_parents.shape} ; ") 
 
-            x = self.conv1(x, edge_index) #+ new_x_parents # add the shortcut of previous parents
+            x = self.conv1(x, edge_index) + new_x_parents # TODO add the shortcut of previous parents
             # x = self.list_conv_fcts[i](x, edge_index) + new_x_parents # add the shortcut of previous parents
-            print(f"shape of x after convolution: {x.shape} \n")        
+            # print(f"shape of x after convolution: {x.shape} \n")        
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
 
             # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
-            # new_x_parents = new_x_parents + x
+            if skip_connection==True: # else stays to 0
+                new_x_parents = new_x_parents + x
 
-        print(f"Last Child Layer : ")
+        # print(f"Last Child Layer : ")
         # last convolutional layer with the last child data (n) (i.e. the last data_end_childs registered)
         data_end_childs = list_data[-1]
+
         x_end_childs = data_end_childs.x.float().to(device)
         edge_index_end_childs = data_end_childs.edge_index.to(device)
 
         x_end_childs = self.conv1(x_end_childs, edge_index_end_childs) #+ new_x_end_childs_parents # add the shortcut of previous parents
         # x_end_childs = self.list_conv_fcts[i](x_end_childs, edge_index_end_childs) + new_x_end_childs_parents # add the shortcut of previous parents
-        print(f"shape of x_end_childs after convolution: {x_end_childs.shape} \n")        
+        # print(f"shape of x_end_childs after convolution: {x_end_childs.shape} \n")        
         x_end_childs = F.relu(x_end_childs)
         x_end_childs = F.dropout(x_end_childs, training=self.training)
         x = self.conv_end(x_end_childs, edge_index_end_childs)

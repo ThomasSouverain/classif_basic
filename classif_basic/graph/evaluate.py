@@ -1,11 +1,16 @@
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 from matplotlib.pylab import plt
 from sklearn.metrics import auc
+from sklearn.metrics import confusion_matrix 
 from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_curve
 from torch_geometric.nn import GCNConv
+
+from classif_basic.graph.train import activate_gpu
+from classif_basic.graph.utils import check_attributes_graph_data
 
 def evaluate_gnn(classifier:GCNConv, data_test:torch, loss_name:str="cross_entropy"):
     # TODO improve the function 
@@ -90,7 +95,7 @@ def get_auc(y_true:torch.tensor, probas_pred:torch.tensor, plot=False)->tuple:
     precision, recall, _ = precision_recall_curve(y_true=y_true_np, probas_pred=probas_pred_class1)
     fpr, tpr, _ = roc_curve(y_true_np, probas_pred_class1)
     roc_auc = auc(fpr, tpr)
-    pr_auc = auc(recall, precision)  
+    pr_auc = auc(recall, precision) 
 
     if plot==True:
         # calculate the no skill line as the proportion of the positive class
@@ -112,7 +117,10 @@ def get_auc(y_true:torch.tensor, probas_pred:torch.tensor, plot=False)->tuple:
         # show the plot
         plt.show()
 
-    return roc_auc, pr_auc 
+    # also return false positive and true positive mean ratios 
+    fpr_ratio = fpr.mean()
+    tpr_ratio = tpr.mean()
+    return roc_auc, pr_auc, fpr_ratio, tpr_ratio
 
 def plot_metrics(metrics_name:str, epoch_nb:int, list_train_epoch_errors:list, list_valid_epoch_errors:list):
     epochs=range(epoch_nb)

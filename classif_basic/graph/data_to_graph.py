@@ -241,3 +241,39 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges:
                 train_mask=train_mask, valid_mask=valid_mask)
     
     return data
+
+def get_parent_child_data(X:pd.DataFrame, Y:pd.DataFrame, list_node_features:list, edge_parent:str, edge_child:str)->torch:
+    """From a tabular DataFrame (X,Y), generates a graph-data with a directed edge egde_parent -> edge_child.
+    Nodes are individuals, and the nodes features are the specified names of columns set as attributes (e.g. only first ancestors to avoid spurious correlation)
+
+    Args:
+        X (pd.DataFrame): Tabular Dataset (without the target)
+        Y (pd.DataFrame): Tabular Dataset (target)
+        list_node_features (list): names of the columns to be set as attributes of the nodes (e.g. only first ancestors to avoid spurious correlation)
+            Must be set to values in X.columns
+        edge_parent (str): name of the column which is the causal ancestor of "edge_child" (e.g. "age" for age->education)
+        edge_child (str): name of the column which is the causal child of "edge_parent" (e.g. "education" for age->education)
+
+    Returns:
+        torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_edges_names
+    """
+    list_edges_names=[edge_parent, edge_child]
+    # # merge features in 2 categories to form the edges faster
+    # for edge in list_edges_names:
+    #     median_edge = X[edge].median() 
+    #     X[edge] = (X[edge] == median_edge).astype(int)
+    
+    X_node_features = X.filter(list_node_features)
+
+    # get the connections between individuals (i.e. edge_index, or adjacency matrix) linking edge_parent -> edge_child
+    edges_child = add_new_edge(data=X, 
+                               previous_edge=None, 
+                               list_edges_names=list_edges_names)
+
+    # get the final graph without spurious correlation, removing the edges (connections) from node features
+    data_child = table_to_graph(X=X_node_features, 
+                                Y=Y, 
+                                list_edges_names=list_edges_names, 
+                                edges=edges_child)
+    
+    return data_child

@@ -3,7 +3,7 @@ from math import floor
 import numpy as np
 import pandas as pd
 import torch
-
+from sklearn.decomposition import FactorAnalysis
 
 def check_attributes_graph_data(data:torch):
     """Check if the graph data have all the required attributes for our GCN training (with the function train_GNN).
@@ -89,3 +89,28 @@ def get_balanced_df(X:pd.DataFrame, Y:pd.DataFrame)->pd.DataFrame:
 
     print(f"Number of individuals (balanced_df): {balanced_df.shape[0]}")
     return balanced_df
+
+def get_unified_col(X: pd.DataFrame, list_cols_to_join: list, new_col_name:str)->pd.DataFrame:
+    """From 2 columns of X, generates a new DataFrame with 1 column - correlating them through factor analysis.
+    Will serve to merge information of columns of the same type to set causal constraints (e.g. from "education" and "education-num" -> "education")
+
+    Args:
+        X (pd.DataFrame): DataFrame with the features 
+        list_cols_to_join (list): list of the 2 columns to unify
+            Must be of len == 2;
+            Must be set to values in X.columns
+        new_col_name (str): name of the new column, that will replace the 2 previous in the new DataFrame
+
+    Returns:
+        pd.DataFrame: X replacing the 2 previous columns by X[new_col_name]
+    """
+# unify same type columns to set causal constraints 
+
+    two_to_one_factor = FactorAnalysis(n_components=1, rotation='varimax') 
+
+    unified_col = two_to_one_factor.fit_transform(X.filter(items = list_cols_to_join))
+
+    X = X.drop(list_cols_to_join, axis=1)
+    X[new_col_name] = unified_col
+
+    return X
