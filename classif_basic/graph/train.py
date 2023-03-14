@@ -9,6 +9,8 @@ from classif_basic.graph.evaluate import get_auc
 from classif_basic.graph.evaluate import get_loss
 from classif_basic.graph.evaluate import plot_metrics
 from classif_basic.graph.loader import get_loader
+from classif_basic.graph.models import GAT_ancestor
+from classif_basic.graph.models import GAT_conv_ancestor
 from classif_basic.graph.models import GCN_ancestor
 from classif_basic.graph.utils import check_attributes_graph_data
 from classif_basic.graph.utils import check_batch_info
@@ -29,6 +31,7 @@ def activate_gpu()->torch.device:
 
 def train_GNN_ancestor(
     list_data_total:torch,
+    model_type:str, # set to a value in {'conv', 'attention', 'conv_attention'}
     loader_method:str,
     loss_name:str="CrossEntropyLoss",
     batch_size:int = None,#150,
@@ -96,7 +99,12 @@ def train_GNN_ancestor(
     # activate and signal the use of GPU for faster processing
     device = activate_gpu()
     # initialize the structure of the classifier, and prepare for GNN training (with GPU)
-    classifier = GCN_ancestor(list_data_total).to(device)    
+    if model_type=='conv':
+        classifier = GCN_ancestor(list_data_total).to(device)    
+    elif model_type=='attention':
+        classifier = GAT_ancestor(list_data_total).to(device) 
+    elif model_type=='conv_attention':
+        classifier = GAT_conv_ancestor(list_data_total).to(device)
     #loss=torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
 
@@ -169,8 +177,8 @@ def train_GNN_ancestor(
             target_valid = target[batch_child.valid_mask]
             optimizer.zero_grad()
             preds = classifier(list_data=list_data, device=device, skip_connection=skip_connection)
-            probas_pred_train = preds[batch_child.train_mask]
-            probas_pred_valid = preds[batch_child.valid_mask]
+            probas_pred_train = preds[batch_child.train_mask].to(device) # TODO delete if takes too much GPU memory
+            probas_pred_valid = preds[batch_child.valid_mask].to(device) # TODO delete if takes too much GPU memory
             # instantiates a balanced loss (depending on classes imbalance inside the batch)
             class_weights=class_weight.compute_class_weight(class_weight='balanced',
                                                             classes=np.unique(target.cpu()),
@@ -208,7 +216,7 @@ def train_GNN_ancestor(
             total_valid = total_valid + len(target_valid)
             correct_valid = correct_valid + (preds_temp_valid == target_valid).sum().item()
             # integrate false positives (inverse because <1) in loss (coeff)
-            error_train = error_train/epoch_fpr_ratio_train
+            error_train = error_train#/epoch_fpr_ratio_train
             error_train.backward()
             optimizer.step()
             i=i+1
@@ -264,6 +272,9 @@ def train_GNN_ancestor(
 
     t_basic_2 = time.time()  
 
+    str_multiple_data_graphs = "unique graph-data" if unique_data_graph==True else "multiple graph-data"
+
+    print(f"{model_type} GNN model, Loader method {loader_method} on {str_multiple_data_graphs}")
     print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {nb_batches} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
 
     plot_metrics(metrics_name=loss_name, epoch_nb=epoch_nb, 

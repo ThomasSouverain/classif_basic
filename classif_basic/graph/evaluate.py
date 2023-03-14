@@ -9,18 +9,18 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_curve
 from torch_geometric.nn import GCNConv
 
-from classif_basic.graph.train import activate_gpu
 from classif_basic.graph.utils import check_attributes_graph_data
 
-def evaluate_gnn(classifier:GCNConv, data_test:torch, loss_name:str="cross_entropy"):
+def evaluate_gnn(classifier:GCNConv, data_test:torch, device, loss_name:str="cross_entropy"):
     # TODO improve the function 
     """Computes the loss and accuracy of a given GCN classifier on test data
 
     Args:
         classifier (GCN): already trained GCN classifier (!) must not have been trained on data_test
         data_test (torch): new graph-data to evaluate the GCN
-            Must have the same attributes (feature nodes, edges...) than data used for GNN training.
-        loss_name (str, optional): type of loss the user wants to compute on test data. Defaults to "cross_entropy".
+            Must have the same attributes (feature nodes, edges...) than data used for GNN training
+        loss_name (str, optional): type of loss the user wants to compute on test data. Defaults to "cross_entropy"
+        device: either GPU of CPU, to compute the classifier predictions
     """
 
     # first of all, check if data_test shares the attributes of the data-graph (data_total) used for our GNN batch training
@@ -30,8 +30,6 @@ def evaluate_gnn(classifier:GCNConv, data_test:torch, loss_name:str="cross_entro
     if loss_name == "cross_entropy":
         print("Loss is measured through cross entropy")
         loss = torch.nn.CrossEntropyLoss()
-
-    device = activate_gpu()
 
     #classifier = classifier.to(device)
     classifier.eval()
