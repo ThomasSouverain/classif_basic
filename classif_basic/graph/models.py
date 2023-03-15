@@ -1,8 +1,11 @@
 import torch 
 import torch.nn.functional as F
+from torch.nn import Dropout
 from torch.nn import Linear
 from torch.nn import ReLU
 from torch_geometric.nn import GCNConv
+from torch_geometric.nn import global_mean_pool
+from torch_geometric.nn import JumpingKnowledge
 from torch_geometric.nn import Sequential
 from torch_geometric.nn.conv import GATConv
 
@@ -223,6 +226,74 @@ class GCN_ancestor(torch.nn.Module):
         x = self.conv_end(x_end_childs, edge_index_end_childs)
 
         return F.log_softmax(x, dim=1)
+    
+class GCN_ancestor_sequential(torch.nn.Module):
+    def __init__(self, list_data):
+        super().__init__()
+
+        data = list_data[-1] # build the structure of the Sequential GNN with any data-graph, as they all share the same shape (node features == ancestors)
+
+        self.seq_model = Sequential('x, edge_index', [
+            (Dropout(p=0.5), 'x -> x'),
+            (GCNConv(data.num_node_features, 64), 'x, edge_index -> x1'),
+            ReLU(inplace=True),
+            (GCNConv(64, 64), 'x1, edge_index -> x2'),
+            ReLU(inplace=True),
+            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
+            (JumpingKnowledge("cat", 64, num_layers=2), 'xs -> x'),
+            Linear(2 * 64, data.num_classes),
+            ReLU(inplace=True),
+        ])
+
+        self.seq_1 = Sequential('x, edge_index', [
+            (Dropout(p=0.5), 'x -> x'),
+            (GCNConv(data.num_node_features, 16), 'x, edge_index -> x1'),
+            ReLU(inplace=True),
+            (GCNConv(16, 16), 'x1, edge_index -> x2'),
+            ReLU(inplace=True),
+            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
+            (JumpingKnowledge("cat", 16), 'xs -> x3'),
+            ReLU(inplace=True),
+            (Dropout(p=0.5), 'x3 -> x'),
+        ])
+
+        self.seq_2 = Sequential('x, edge_index', [
+            (Dropout(p=0.5), 'x -> x'),
+            (GCNConv(data.num_node_features, 16), 'x, edge_index -> x1'),
+            ReLU(inplace=True),
+            (GCNConv(16, 16), 'x1, edge_index -> x2'),
+            ReLU(inplace=True),
+            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
+            (JumpingKnowledge("cat", 16, num_layers=2), 'xs -> x3'),
+            ReLU(inplace=True),
+            (Dropout(p=0.5), 'x3 -> x3'),
+            (GCNConv(16*2, data.num_classes), 'x3, edge_index -> x'),
+            (lambda x: F.log_softmax(x, dim=1))
+        ])
+
+    def forward(self, list_data, device, skip_connection): 
+        # new_x_parents in case of skip connection <=> keep ancestors' values 
+        new_x_parents = 0
+        for i, data in enumerate(list_data): # loop for the (n) first ancestor data
+            data = data.to(device)
+            x = data.x.float().to(device)
+            edge_index=data.edge_index.to(device)
+
+            x = self.seq_model(x=x, edge_index=edge_index) + new_x_parents # TODO seq_1
+
+            # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
+            if skip_connection==True: # else stays to 0
+                new_x_parents = new_x_parents + x
+        
+        # return binary result (for classif) in last child layer
+        data_end_childs = list_data[-1]
+
+        x_end_childs = data_end_childs.x.float().to(device)
+        edge_index_end_childs = data_end_childs.edge_index.to(device)
+
+        x_end_childs = self.seq_model(x_end_childs, edge_index_end_childs) # TODO seq_2
+
+        return x
 
 class GraphAttentionLayer(torch.nn.Module):
     """

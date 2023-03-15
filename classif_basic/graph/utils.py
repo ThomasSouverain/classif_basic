@@ -114,3 +114,25 @@ def get_unified_col(X: pd.DataFrame, list_cols_to_join: list, new_col_name:str)-
     X[new_col_name] = unified_col
 
     return X
+
+def normalize_df(df:pd.DataFrame, normalization:str)->pd.DataFrame:
+    """Returns the DataFrame normalized with either the 
+
+    Args:
+        df (pd.DataFrame): the initial DataFrame
+        normalization (str): either by mean, or min-max value
+            Must be set to a value in {'mean','min_max'}
+
+    Returns:
+        pd.DataFrame: the normalized DataFrame
+    """
+    if normalization=='mean':
+        normalized_df=(df-df.mean())/df.std()
+
+    elif normalization=='min_max':
+        normalized_df=(df-df.min())/(df.max()-df.min())
+    
+    else:
+        raise NotImplementedError("This normalization technique of the DataFrame is not implemented. Must be set to a value in {'mean','min_max'}")
+    
+    return normalized_df
