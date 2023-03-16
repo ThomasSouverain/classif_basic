@@ -7,15 +7,12 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
-
+import xgboost
+from matplotlib import pyplot
 from sklearn import ensemble
 from sklearn.metrics import log_loss
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics import precision_recall_curve
-
-from matplotlib import pyplot
-
-import xgboost
 
 def train_naive_xgb(
     X_train: pd.DataFrame,
@@ -201,6 +198,21 @@ def pickle_save_model(uncorrected_model: xgboost, uncorrected_model_path: str = 
 
     with open(uncorrected_model_path, "wb") as outp:  # Overwrites any existing file
         pickle.dump(uncorrected_model, outp, pickle.HIGHEST_PROTOCOL)
+
+def pickle_load_model(uncorrected_model_path: str):
+    """Load a model from a specified directory where it is saved.
+
+    Parameters
+    ----------
+    uncorrected_model_path : str, 
+        Where the uncorrected_model was previously saved, e.g. "/work/data/models/uncorrected_model.pkl"
+    """
+
+    with open(uncorrected_model_path, "rb") as input_file:
+        model = pickle.load(input_file)
+    
+    return model
+
 
 def prediction_train_valid_by_task(
     model: xgboost,
