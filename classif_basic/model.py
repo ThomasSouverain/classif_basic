@@ -279,7 +279,7 @@ def prediction_train_valid_by_task(
 
     return Y_pred_train_valid
 
-def compute_best_fscore(Y_splitted_set: pd.DataFrame, proba_splitted_set: pd.DataFrame) -> pyplot:
+def compute_best_fscore(Y_splitted_set: pd.DataFrame, proba_splitted_set: pd.DataFrame, plot:bool=True) -> tuple:
     """Based on fscore, optimises the threshold of the model.
     It will permit to convert predicted probabilities into labels (Y predicted).
 
@@ -289,11 +289,17 @@ def compute_best_fscore(Y_splitted_set: pd.DataFrame, proba_splitted_set: pd.Dat
         Target, ie true labels of Y.
     proba_splitted_set : pd.DataFrame
         Vector of probabilities predicted by the model = p(Y==1) for binary classification.
+    plot: bool, by default True
+        If the user wants to plot the precision / recall curve for the model showing the best threshold.
 
     Returns
     -------
-    pyplot
-        A plot of precision / recall curve for the model showing the best threshold.
+    Tuple(int):
+        best_threshold, best_fscore
+
+    if plot==True:
+        pyplot
+            A plot of precision / recall curve for the model showing the best threshold.
     """
     precision_valid, recall_valid, thresholds = precision_recall_curve(
         Y_splitted_set, proba_splitted_set
@@ -303,27 +309,26 @@ def compute_best_fscore(Y_splitted_set: pd.DataFrame, proba_splitted_set: pd.Dat
     # locate the index of the largest f score
     ix = np.argmax(fscore)
 
-    print(f"len(thresholds): {len(thresholds)}")
-    print(Y_splitted_set.shape)
-
     best_threshold = thresholds[ix]
     best_fscore = fscore[ix]
 
-    print("Best Threshold=%f, with F-Score=%.3f" % (best_threshold, best_fscore))
+    if plot==True:
 
-    # plot the roc curve for the model
-    no_skill = len(Y_splitted_set[Y_splitted_set == 1]) / len(Y_splitted_set)
-    train_fig = pyplot.plot([0, 1], [no_skill, no_skill], linestyle="--", label="No Skill")
-    train_fig = pyplot.plot(recall_valid, precision_valid, marker=".", label="Model")
-    train_fig = pyplot.scatter(
-        recall_valid[ix], precision_valid[ix], marker="o", color="black", label="Best"
-    )
-    # axis labels
-    train_fig = pyplot.title("Statistical performance on valid set (PR AUC)")
-    train_fig = pyplot.xlabel("Recall")
-    train_fig = pyplot.ylabel("Precision")
-    train_fig = pyplot.legend()
-    # show the plot
-    pyplot.show(train_fig)
+        print("Best Threshold=%f, with F-Score=%.3f" % (best_threshold, best_fscore))
+
+        # plot the roc curve for the model
+        no_skill = len(Y_splitted_set[Y_splitted_set == 1]) / len(Y_splitted_set)
+        train_fig = pyplot.plot([0, 1], [no_skill, no_skill], linestyle="--", label="No Skill")
+        train_fig = pyplot.plot(recall_valid, precision_valid, marker=".", label="Model")
+        train_fig = pyplot.scatter(
+            recall_valid[ix], precision_valid[ix], marker="o", color="black", label="Best"
+        )
+        # axis labels
+        train_fig = pyplot.title("Statistical performance on valid set (PR AUC)")
+        train_fig = pyplot.xlabel("Recall")
+        train_fig = pyplot.ylabel("Precision")
+        train_fig = pyplot.legend()
+        # show the plot
+        pyplot.show(train_fig)
 
     return best_threshold, best_fscore

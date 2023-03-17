@@ -1,49 +1,108 @@
 import itertools
 import time
+from typing import List
 
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.utils import class_weight
+from xgboost import XGBClassifier
 
+from classif_basic.graph.evaluate import compute_metric
 from classif_basic.graph.evaluate import get_auc
 from classif_basic.graph.evaluate import get_loss
-from classif_basic.graph.evaluate import plot_metrics
 from classif_basic.graph.loader import get_loader
 from classif_basic.graph.models import GAT_ancestor
 from classif_basic.graph.models import GAT_conv_ancestor
 from classif_basic.graph.models import GCN_ancestor
+from classif_basic.graph.models import GCN_ancestor_sequential
+from classif_basic.graph.plot import plot_metric_epochs
+from classif_basic.graph.plot import plot_perfs_gnn
+from classif_basic.graph.utils import activate_gpu
 from classif_basic.graph.utils import check_attributes_graph_data
 from classif_basic.graph.utils import check_batch_info
+from classif_basic.model import compute_best_fscore
 
-def activate_gpu()->torch.device:
-    """Activate and signal the use of GPU for faster processing
+def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd.DataFrame, Y_valid:pd.DataFrame)->tuple:
+    """Given DataFrames X and Y, performs train/valid/test split 
+    and trains a baseline XGB classifier for comparison with other models.
 
-    Returns (torch.device):
-        Activated device for GNN computation, using either GPU or CPU
+    Args:
+        X_train (pd.DataFrame): X of the train set used for other models training
+        Y_train (pd.DataFrame): Target of the train set used for other models training
+        X_valid (pd.DataFrame): X of the valid set used for other models training
+        Y_valid (pd.DataFrame): Target of the valid set used for other models training
+
+    Returns:
+        tuple: performance metrics of the XGB on train&valid set
+            ROC_AUC, PR_AUC, False Positive Ratio, True Positive Ratio
+            Also plot ROC_AUC and PR_AUC
     """
-    if torch.cuda.is_available():    
-        print("\n Using GPU!")    
-        device = torch.device("cuda")
-    else:    
-        print("\n Using CPU!")       
-        device = torch.device("cpu")
-    return device
+
+    X_train_valid = X_train.append(X_valid)
+    Y_train_valid = Y_train.append(Y_valid)
+
+    SEED = 7
+    early_stopping_rounds = 20
+    verbose = 100
+        
+    xgb_classif_params = {
+        "seed": SEED,
+        "objective": "binary:logistic",
+        "n_estimators": 1000,
+        "max_depth": 3,
+        "importance_type": "gain",
+        "use_label_encoder": False,
+    }
+
+    eval_metric="auc"
+
+    model = XGBClassifier(**xgb_classif_params)
+
+    model.fit(
+        X_train,
+        Y_train,
+        eval_metric=eval_metric,
+        early_stopping_rounds=early_stopping_rounds,
+        eval_set=[(X_train, Y_train), (X_valid, Y_valid)],
+        verbose=verbose,
+    )
+
+    probas_pred_train_valid = model.predict_proba(X_train_valid)
+    probas_pred_valid = model.predict_proba(X_valid)
+
+    ## set y predicted with optimised thresholds, to compute accuracy
+    best_threshold, best_fscore = compute_best_fscore(Y_valid, probas_pred_valid[:,1])
+
+    Y_pred_train_valid = (probas_pred_train_valid[:,1] >= best_threshold).astype(int)
+
+    total_target = Y_train_valid.shape[0]
+    total_exact=(Y_pred_train_valid==Y_train_valid).sum()#.all()
+
+    xgb_accuracy = total_exact/total_target
+    print(f"xgb_accuracy: {xgb_accuracy}")
+
+    # compute AUCs and false / true positive ratios
+    roc_auc, pr_auc, fpr_ratio, tpr_ratio = get_auc(y_true=Y_train_valid,
+            probas_pred=probas_pred_train_valid,
+            plot=True)
+
+    return roc_auc, pr_auc, fpr_ratio, tpr_ratio
 
 def train_GNN_ancestor(
     list_data_total:torch,
-    model_type:str, # set to a value in {'conv', 'attention', 'conv_attention'}
+    model_type:str, 
     loader_method:str,
     loss_name:str="CrossEntropyLoss",
-    batch_size:int = None,#150,
-    nb_batches:int = None, #300,
-    epoch_nb:int = 5,
+    batch_size:int = None,
+    nb_batches:int = None,
+    epoch_nb:int = 1000,
+    cv_step:int=100,
     learning_rate:float = 0.001,
     num_neighbors:int = 30,
     nb_iterations_per_neighbors:int = 2,
-    plot_loss:bool=True,
-    plot_auc:bool=True,
-    unique_data_graph:bool=False,
     skip_connection:bool=False, # to overweight ancestors conv layers
+    list_performance_metrics:list=["accuracy", "roc_auc", "pr_auc", "fpr_ratio", "tpr_ratio"],
     )->GCN_ancestor:
     """Train a GNN adapted to progressive integration of causal descendants, i.e. new graph-data through GCN_ancestor() layers
 
@@ -73,7 +132,34 @@ def train_GNN_ancestor(
         (2) OR iterate over several loaders -> pass them into GNC_ancestor... But is it possible to iterate over a n-uplet of loaders? To be, or not to be...
 
     Here, we try the method (2)...
-        
+
+    Args:
+        list_data_total (List(torch_geometric.data.Data)): the concatenation of each data-graph, following the order of their causal links (edges)
+            Each data-graph must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
+        model_type (str): how to train the GNN to progressively integrate causal information (new data-graph edge = new layer of the GNN)
+            Must be set to a value in {'conv', 'sequential', 'attention', 'conv_attention'}
+        loader_method (str): how to split data in batches to train the GNN
+            Must be set to a value in {'neighbor_nodes', 'index_groups'}
+            if loader_method == 'neighbor_nodes':
+                num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
+                nb_iterations_per_neighbors (int, optional): number of iterations of the loader to find the 'similar' nodes. Defaults to 2.
+
+        loss_name (str, optional): Measurement of the performance during GNN training, used for gradient descent. Defaults to "CrossEntropyLoss".
+        batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to 32.        
+        nb_batches (int, optional): number of splits (i.e. batches) on which the GNN will be trained. Defaults to None.
+        epoch_nb (int, optional): number of epochs, i.e. backs and forths, the GNN has to train. Defaults to 1000.
+        cv_step (int, optional): for cross-validation, after how many epochs to stop training if train/valid loss does not decrease. Defaults to 100.
+        learning_rate (float, optional): learning rate of the GNN for gradient descent. Defaults to 0.001.
+        skip_connection (bool, optional): whether to stress the importance on past layers (i.e. "ancestor" edge knowledge) in GNN architecture. Defaults to False.
+        list_performance_metrics (list, optional): names of the metrics to assess GNN performances
+            By default ["accuracy", "roc_auc", "pr_auc", "fpr_ratio", "tpr_ratio"]
+            Each element must be set to a value in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio', 'accuracy}
+
+    Raises:
+        NotImplementedError: _description_
+
+    Returns:
+        GCN_ancestor: _description_
     """
     # first, check that data are passed, either already splitted in batches (list_loader) or only in full-size graph format (list_data_total)
     # and complete the missing information (size of the batches / nb of batches)
@@ -99,73 +185,49 @@ def train_GNN_ancestor(
     # activate and signal the use of GPU for faster processing
     device = activate_gpu()
     # initialize the structure of the classifier, and prepare for GNN training (with GPU)
+    print(f"\n GNN of {model_type} type")
     if model_type=='conv':
-        classifier = GCN_ancestor(list_data_total).to(device)    
+        classifier = GCN_ancestor(list_data_total).to(device) 
+    elif model_type=='sequential':
+        classifier = GCN_ancestor_sequential(list_data_total).to(device)
     elif model_type=='attention':
         classifier = GAT_ancestor(list_data_total).to(device) 
     elif model_type=='conv_attention':
         classifier = GAT_conv_ancestor(list_data_total).to(device)
+    else:
+        raise NotImplementedError("Your ancestor GNN 'model_type' is not implemented. "
+                                  "Must be set to a value in {'conv', 'sequential', 'attention', 'conv_attention'}")
     #loss=torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
 
     print("\n'''Training Start '''\n")
     classifier.train()
 
-    # get errors in list -> plot them across epochs
-    list_train_epoch_errors = []
-    list_valid_epoch_errors = []
+    # get performance metrics in lists -> plot them across epochs
+    list_performance_metrics.append(loss_name)
+    dict_train_epochs_metrics = {} # dict_train_epochs_metrics[metric_name] == list with metrics across epochs 
+    dict_valid_epochs_metrics = {}
 
-    list_train_epoch_roc = []
-    list_valid_epoch_roc = []
+    for metric_name in list_performance_metrics:
+        dict_train_epochs_metrics[metric_name] = []
+        dict_valid_epochs_metrics[metric_name] = []
 
-    list_train_epoch_pr = []
-    list_valid_epoch_pr = []
-
-    list_train_epoch_fpr_ratio = []
-    list_valid_epoch_fpr_ratio = []
-
-    list_train_epoch_tpr_ratio = []
-    list_valid_epoch_tpr_ratio = []
-
-    list_train_epoch_accuracy = []
-    list_valid_epoch_accuracy = []
-
+    # let's start the training by epochs 
     for epoch in range(epoch_nb):
-        
-        epoch_metrics_train = 0
-        epoch_metrics_valid = 0
 
-        epoch_roc_train = 0
-        epoch_roc_valid = 0
+        dict_train_new_epoch_metrics_value = {}
+        dict_valid_new_epoch_metrics_value = {}
 
-        epoch_pr_train = 0
-        epoch_pr_valid = 0
-
-        epoch_fpr_ratio_train = 0
-        epoch_fpr_ratio_valid = 0
-
-        epoch_tpr_ratio_train = 0
-        epoch_tpr_ratio_valid = 0
-
-        total_train = 0
-        correct_train = 0
-        total_valid = 0
-        correct_valid = 0
+        for metric_name in list_performance_metrics:
+            dict_train_new_epoch_metrics_value[metric_name] = 0
+            dict_valid_new_epoch_metrics_value[metric_name] = 0
 
         classifier.train()
 
         i=0
 
-        # TODO set in a function get_list_loader()
-        if unique_data_graph==True:
-            list_full_data_graphs = list_loader
-        elif unique_data_graph==False: # by default, when multiple data-graphs (=> directed edges, i.e. causal paths) are passed
-            list_full_data_graphs = itertools.zip_longest(*tuple(list_loader))
-
-        # for batch in list_loader: # TODO delete -> temporary to train a 1-graph "classic" GCN on all features for comparison
-        #     print(f"Training Batch {i+1} of unique graph\n")
-        #     list_data = list(batch)
-        for batch in list_full_data_graphs:#itertools.zip_longest(*tuple(list_loader)): 
+        iter_full_data_graphs = itertools.zip_longest(*tuple(list_loader))
+        for batch in iter_full_data_graphs: 
             # print(f"Training Batch {i+1} ")
             list_data = list(batch)
             # (!) TODO think about the training target: 
@@ -177,130 +239,76 @@ def train_GNN_ancestor(
             target_valid = target[batch_child.valid_mask]
             optimizer.zero_grad()
             preds = classifier(list_data=list_data, device=device, skip_connection=skip_connection)
-            probas_pred_train = preds[batch_child.train_mask].to(device) # TODO delete if takes too much GPU memory
-            probas_pred_valid = preds[batch_child.valid_mask].to(device) # TODO delete if takes too much GPU memory
+            probas_pred_train = preds[batch_child.train_mask].to(device) 
+            probas_pred_valid = preds[batch_child.valid_mask].to(device) 
             # instantiates a balanced loss (depending on classes imbalance inside the batch)
-            class_weights=class_weight.compute_class_weight(class_weight='balanced',
+            class_weights=class_weight.compute_class_weight(class_weight='balanced', # alternative: dict_class_weights {'0':1, '1':15} 
                                                             classes=np.unique(target.cpu()),
                                                             y=target.cpu().numpy())
             class_weights=torch.tensor(class_weights,dtype=torch.float).to(device)
-            loss = torch.nn.CrossEntropyLoss(weight=class_weights,reduction='mean')
+            #print(class_weights)
+            loss = torch.nn.CrossEntropyLoss(weight=class_weights,reduction='mean')  
+            # loss = torch.nn.CrossEntropyLoss() # if balanced dataset, weights are not necessary -> TODO sample weights in any case? 
             # compute train metrics
             error_train = loss(probas_pred_train, target_train)
-            epoch_metrics_train = epoch_metrics_train + error_train.item()
+            dict_train_new_epoch_metrics_value[loss_name] = dict_train_new_epoch_metrics_value[loss_name] + error_train.item()
             # compute valid metrics
             error_valid = loss(probas_pred_valid, target_valid)
-            epoch_metrics_valid = epoch_metrics_valid + error_valid.item()
-            # compute (and aggregate over batches) ROC and PR AUC -> TODO? function to get all measurements per batch (loss, pr, roc)
-            # add here (temporary TODO delete?) false and true positive ratios
-            roc_auc_train, pr_auc_train, fpr_ratio_train, tpr_ratio_train = get_auc(
-                                    probas_pred=probas_pred_train, 
-                                    y_true=target_train)
-            roc_auc_valid, pr_auc_valid, fpr_ratio_valid, tpr_ratio_valid = get_auc(
-                                    probas_pred=probas_pred_valid, 
-                                    y_true=target_valid)
-            epoch_roc_train = epoch_roc_train + roc_auc_train.item()
-            epoch_roc_valid = epoch_roc_valid + roc_auc_valid.item()
-            epoch_pr_train = epoch_pr_train + pr_auc_train.item()
-            epoch_pr_valid = epoch_pr_valid + pr_auc_valid.item()
-            epoch_fpr_ratio_train = epoch_fpr_ratio_train + fpr_ratio_train.item()
-            epoch_fpr_ratio_valid = epoch_fpr_ratio_valid + fpr_ratio_valid.item()
-            epoch_tpr_ratio_train = epoch_tpr_ratio_train + tpr_ratio_train.item()
-            epoch_tpr_ratio_valid = epoch_tpr_ratio_valid + tpr_ratio_valid.item()
-            # compute train&valid accuracy TODO compute accuracy in get_accuracy()
-            _, preds_temp_train = torch.max(probas_pred_train.data, 1)
-            total_train = total_train + len(target_train)
-            correct_train = correct_train + (preds_temp_train == target_train).sum().item()
+            dict_valid_new_epoch_metrics_value[loss_name] = dict_valid_new_epoch_metrics_value[loss_name] + error_valid.item()
 
-            _, preds_temp_valid = torch.max(probas_pred_valid.data, 1)
-            total_valid = total_valid + len(target_valid)
-            correct_valid = correct_valid + (preds_temp_valid == target_valid).sum().item()
-            # integrate false positives (inverse because <1) in loss (coeff)
-            error_train = error_train#/epoch_fpr_ratio_train
+            for metric_name in [metric_name for metric_name in list_performance_metrics if metric_name!=loss_name]: # loss handled apart for gradients
+                new_epoch_metrics_train = compute_metric(metric_name, probas_pred_train, target_train)
+                new_epoch_metrics_valid = compute_metric(metric_name, probas_pred_valid, target_valid)
+
+                dict_train_new_epoch_metrics_value[metric_name] = dict_train_new_epoch_metrics_value[metric_name] + new_epoch_metrics_train.item() 
+                dict_valid_new_epoch_metrics_value[metric_name] = dict_valid_new_epoch_metrics_value[metric_name] + new_epoch_metrics_valid.item() 
+            
+            # loss handled apart to back-propagate gradients
             error_train.backward()
             optimizer.step()
             i=i+1
 
-        error_metrics_train = round(epoch_metrics_train/(i+1),2)
-        error_metrics_valid = round(epoch_metrics_valid/(i+1),2)
+        for metric_name in list_performance_metrics:
+            metrics_train = round(dict_train_new_epoch_metrics_value[metric_name]/i,2)
+            metrics_valid = round(dict_valid_new_epoch_metrics_value[metric_name]/i,2)
 
-        list_train_epoch_errors.append(error_metrics_train)
-        list_valid_epoch_errors.append(error_metrics_valid)
+            dict_train_epochs_metrics[metric_name].append(metrics_train)
+            dict_valid_epochs_metrics[metric_name].append(metrics_valid)
 
-        # TODO definitely a function to not repeat the codes (measurements per batch)
+        list_train_losses = dict_train_epochs_metrics[loss_name]
+        list_valid_losses = dict_valid_epochs_metrics[loss_name]
+        print(f"||| Epoch {epoch + 1} {loss_name}_train = {list_train_losses[-1]} {loss_name}_valid = {list_valid_losses[-1]}")
 
-        roc_train = round(epoch_roc_train/(i+1),2)
-        roc_valid = round(epoch_roc_valid/(i+1),2)
+        # cross-validation
+        if len(list_train_losses) > cv_step: # enable initialisation of the losses 
+            min_loss_train_registered = min(list_train_losses[:-cv_step])
+            min_loss_train_current = min(list_train_losses)
+            min_loss_valid_registered = min(list_valid_losses[:-cv_step])
+            min_loss_valid_current = min(list_valid_losses)
 
-        list_train_epoch_roc.append(roc_train)
-        list_valid_epoch_roc.append(roc_valid)
-
-        pr_train = round(epoch_pr_train/(i+1),2)
-        pr_valid = round(epoch_pr_valid/(i+1),2)
-
-        list_train_epoch_pr.append(pr_train)
-        list_valid_epoch_pr.append(pr_valid)
-
-        list_train_epoch_fpr_ratio.append(fpr_ratio_train)
-        list_valid_epoch_fpr_ratio.append(fpr_ratio_valid)
-
-        list_train_epoch_tpr_ratio.append(tpr_ratio_train)
-        list_valid_epoch_tpr_ratio.append(tpr_ratio_valid)
-
-        accuracy_train = round(correct_train / total_train, 2)
-        accuracy_valid = round(correct_valid / total_valid, 2)
-
-        list_train_epoch_accuracy.append(accuracy_train)
-        list_valid_epoch_accuracy.append(accuracy_valid)
-
-        print(f"||| Epoch {epoch + 1} {loss_name}_train = {error_metrics_train} {loss_name}_valid = {error_metrics_valid}")
-            #   f"\n accuracy_train: {accuracy_train} accuracy_valid: {accuracy_valid} \n" 
-            #   f"\n roc_auc_train: {roc_train} roc_valid: {roc_valid} \n"
-            #   f"\n pr_auc_train: {pr_train} pr_valid: {pr_valid} \n")
-
-        # TODO when more stable models (see below) cross validation
-        # min_train_epoch_error = min(min_train_epoch_error, error_metrics_train)
-        # min_valid_epoch_error = min(min_valid_epoch_error, error_metrics_valid)
-
-        # if min_train_epoch_error < error_metrics_train and min_valid_epoch_error < error_metrics_valid:
-        #     print("Training improves no more across epochs")                                    
-        #     print("Last Epoch Classifier on last batch")
-        #     get_auc(probas_pred=probas_pred_train, 
-        #             y_true=target_train,
-        #             plot=True)
-        #     break 
+            if min_loss_train_current >= min_loss_train_registered or min_loss_valid_current >= min_loss_valid_registered:
+                print(f"Training no more improved over the past {cv_step} epochs")
+                epoch_nb = epoch + 1
+                break 
 
     t_basic_2 = time.time()  
 
-    str_multiple_data_graphs = "unique graph-data" if unique_data_graph==True else "multiple graph-data"
+    str_multiple_data_graphs = "unique graph-data" if len(list_data_total)==1 else "multiple graph-data"
 
-    print(f"{model_type} GNN model, Loader method {loader_method} on {str_multiple_data_graphs}")
+    print(f"\n{model_type} GNN model, Loader method {loader_method} on {str_multiple_data_graphs}")
     print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {nb_batches} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
 
-    plot_metrics(metrics_name=loss_name, epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_errors, 
-                list_valid_epoch_errors=list_valid_epoch_errors)
+    print("\n||| Results of the GNN across epochs |||")
 
-    plot_metrics(metrics_name="Accuracy", epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_accuracy, 
-                list_valid_epoch_errors=list_valid_epoch_accuracy)
+    for metric_name in list_performance_metrics:
 
-    plot_metrics(metrics_name="ROC AUC", epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_roc, 
-                list_valid_epoch_errors=list_valid_epoch_roc)
+        plot_metric_epochs(metric_name=metric_name, 
+                    list_train_epoch_metrics=dict_train_epochs_metrics[metric_name], 
+                    list_valid_epoch_metrics=dict_valid_epochs_metrics[metric_name])
 
-    plot_metrics(metrics_name="PR AUC", epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_pr, 
-                list_valid_epoch_errors=list_valid_epoch_pr)
-    
-    plot_metrics(metrics_name="False Positive Rate", epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_fpr_ratio, 
-                list_valid_epoch_errors=list_valid_epoch_fpr_ratio)
-
-    plot_metrics(metrics_name="True Positive Rate", epoch_nb=epoch_nb, 
-                list_train_epoch_errors=list_train_epoch_tpr_ratio, 
-                list_valid_epoch_errors=list_valid_epoch_tpr_ratio)
-
-    # TODO set in a separate module the visualisation, as computing of metrics (utils.py?)
+    print("\n||| Results of the GNN on the last epoch |||")
+    # even if it is arbitrary, plot the results on the last batch (small => biased predictions...) -> how TODO else? 
+    plot_perfs_gnn(classifier=classifier,
+                 list_data_test=list_data) # as it is the last => child list_data in memory
 
     return classifier

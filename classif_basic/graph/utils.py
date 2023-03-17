@@ -51,6 +51,23 @@ def check_batch_info(data_total:torch, batch_size:int, nb_batches:int)->tuple:
 
     return batch_size, nb_batches
 
+def tensor_to_numpy(tensor:torch.tensor)->np.array:
+    """Converts a tensor into numpy (if tensor).
+     Serves to compute and plot metrics & avoids waste of GPU memory (CPU device).
+
+    Args:
+        tensor (torch.tensor) 
+
+    Returns:
+        np.array
+    """
+    if torch.is_tensor(tensor):
+        numpy_vector = tensor.cpu().detach().numpy()
+    else:
+        raise NotImplementedError("The vector you want to convert to numpy is not a tensor")
+    return numpy_vector
+
+
 def get_balanced_df(X:pd.DataFrame, Y:pd.DataFrame)->pd.DataFrame:
     """From an imbalanced DataFrame with 2 classes "0" and "1" (for the moment, in favour of class "0"), returns a new 50/50 balanced DataFrame.
 
@@ -136,3 +153,17 @@ def normalize_df(df:pd.DataFrame, normalization:str)->pd.DataFrame:
         raise NotImplementedError("This normalization technique of the DataFrame is not implemented. Must be set to a value in {'mean','min_max'}")
     
     return normalized_df
+
+def activate_gpu()->torch.device:
+    """Activate and signal the use of GPU for faster processing
+
+    Returns (torch.device):
+        Activated device for GNN computation, using either GPU or CPU
+    """
+    if torch.cuda.is_available():    
+        print("\n Using GPU!")    
+        device = torch.device("cuda")
+    else:    
+        print("\n Using CPU!")       
+        device = torch.device("cpu")
+    return device

@@ -1,3 +1,6 @@
+from typing import List
+from typing import Union
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -9,48 +12,10 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_curve
 from torch_geometric.nn import GCNConv
 
+from classif_basic.graph.utils import activate_gpu
 from classif_basic.graph.utils import check_attributes_graph_data
-
-def evaluate_gnn(classifier:GCNConv, data_test:torch, device, loss_name:str="cross_entropy"):
-    # TODO improve the function 
-    """Computes the loss and accuracy of a given GCN classifier on test data
-
-    Args:
-        classifier (GCN): already trained GCN classifier (!) must not have been trained on data_test
-        data_test (torch): new graph-data to evaluate the GCN
-            Must have the same attributes (feature nodes, edges...) than data used for GNN training
-        loss_name (str, optional): type of loss the user wants to compute on test data. Defaults to "cross_entropy"
-        device: either GPU of CPU, to compute the classifier predictions
-    """
-
-    # first of all, check if data_test shares the attributes of the data-graph (data_total) used for our GNN batch training
-    check_attributes_graph_data(data_test)
-
-    # set the loss (for the moment, cross_entropy by default) TODO extend to other losses 
-    if loss_name == "cross_entropy":
-        print("Loss is measured through cross entropy")
-        loss = torch.nn.CrossEntropyLoss()
-
-    #classifier = classifier.to(device)
-    classifier.eval()
-
-    data_test = data_test.to(device)
-    target = data_test.y.to(device)
-
-    preds = classifier(data=data_test, device=device)
-
-    error_test = loss(preds, target)
-    print(f"\nError on test: {error_test:.4f} \n")
-
-    # compute overall train&valid accuracy
-    _, preds_temp = torch.max(preds.data, 1)
-    total = len(target)
-    correct = (preds_temp == target).sum().item()
-    print(f"Test Accuracy = {round(correct / total, 2)}") 
-
-    # TODO compute and plot ROC-AUC
-
-    return
+from classif_basic.graph.utils import tensor_to_numpy
+from classif_basic.model import compute_best_fscore
 
 def get_loss(loss_name:str, probas_pred: torch.tensor, y_true: torch.tensor):
     """Computes the loss according to the chosen metrics for GNN training.
@@ -84,16 +49,31 @@ def get_loss(loss_name:str, probas_pred: torch.tensor, y_true: torch.tensor):
     
     return error_metrics
 
-def get_auc(y_true:torch.tensor, probas_pred:torch.tensor, plot=False)->tuple:
-    # for AUC computing, separate gradients from Y and probabilities vectors
-    y_true_np = y_true.cpu().detach().numpy()
-    probas_pred_np = probas_pred.cpu().detach().numpy()
+def get_auc(y_true:Union[torch.tensor, np.array], probas_pred:Union[torch.tensor, np.array], plot=False)->tuple:
+    """Computes the ROC & PR AUCs, and false and true positive ratios, 
+    given a vector of probabilities for 2 classes and true labels (binary classification).
+
+    Args:
+        probas_pred (Union[torch.tensor, np.array]): vector of probabilities for the 2 classes
+            shape(n_indivs, 2)
+        y_true (Union[torch.tensor, np.array]): true labels 
+            Must be set to values in {0,1}
+            shape (n_indivs, )
+        plot (bool, optional):if True, plots the ROC AUC and PR AUC curves. Defaults to False.
+
+    Returns:
+        tuple: roc_auc, pr_auc, fpr_ratio, tpr_ratio
+    """
+    # ensure to use CPU and arrays -> accuracy and AUC computing need to separate values from gradients
+    probas_pred = tensor_to_numpy(probas_pred) if torch.is_tensor(probas_pred) else probas_pred
+    y_true = tensor_to_numpy(y_true) if torch.is_tensor(y_true) else y_true
+    # in case of np.array or pandas objects, already in the expected format to plot AUC
     # only get probability of class 1, for AUCs computing
-    probas_pred_class1 = probas_pred_np[:,1]
-    precision, recall, _ = precision_recall_curve(y_true=y_true_np, probas_pred=probas_pred_class1)
-    fpr, tpr, _ = roc_curve(y_true_np, probas_pred_class1)
-    roc_auc = auc(fpr, tpr)
-    pr_auc = auc(recall, precision) 
+    probas_pred_class1 = probas_pred[:,1]
+    precision, recall, _ = precision_recall_curve(y_true=y_true, probas_pred=probas_pred_class1)
+    fpr, tpr, _ = roc_curve(y_true, probas_pred_class1)
+    roc_auc = round(auc(fpr, tpr),2)
+    pr_auc = round(auc(recall, precision),2)
 
     if plot==True:
         # calculate the no skill line as the proportion of the positive class
@@ -115,25 +95,62 @@ def get_auc(y_true:torch.tensor, probas_pred:torch.tensor, plot=False)->tuple:
         # show the plot
         plt.show()
 
-    # also return false positive and true positive mean ratios 
-    fpr_ratio = fpr.mean()
-    tpr_ratio = tpr.mean()
+    # also return false positive and true positive mean ratios TODO other aggregation than mean?
+    fpr_ratio = round(fpr.mean(),2)
+    tpr_ratio = round(tpr.mean(),2)
     return roc_auc, pr_auc, fpr_ratio, tpr_ratio
 
-def plot_metrics(metrics_name:str, epoch_nb:int, list_train_epoch_errors:list, list_valid_epoch_errors:list):
-    epochs=range(epoch_nb)
-    # Plot and label the training and validation loss values
-    plt.plot(epochs, list_train_epoch_errors, label=f'Training {metrics_name}')
-    plt.plot(epochs, list_valid_epoch_errors, label=f'Validation {metrics_name}')
+def compute_metric(metric_name:str, probas_pred:Union[torch.tensor, np.array], y_true:Union[torch.tensor, np.array], plot:bool=False)->float:
+    """Computes the desired metric for binary classification, given a vector of probabilities for 2 classes and true labels.
+
+    Args:
+        metric_name (str): metric to be computed
+            Must be set to a value in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio', 'accuracy}
+        probas_pred (Union[torch.tensor, np.array]): vector of probabilities for the 2 classes
+            shape(n_indivs, 2)
+        y_true (Union[torch.tensor, np.array]): true labels 
+            Must be set to values in {0,1}
+            shape (n_indivs, )
+        plot (bool): by default False. If True, plots:
+            - PR AUC & ROC AUC for metrics_name in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio'}
+            - precision / recall curve (used to choose the best threshold with Fscore) if metrics_name == "accuracy"
+
+    Raises:
+        NotImplementedError: when metric's computing is not implemented 
+
+    Returns:
+        float: value of the metric
+    """
+    # ensure to use CPU and arrays -> accuracy and AUC computing need to separate values from gradients    
+    probas_pred = tensor_to_numpy(probas_pred) if torch.is_tensor(probas_pred) else probas_pred
+    y_true = tensor_to_numpy(y_true) if torch.is_tensor(y_true) else y_true
+
+    if metric_name in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio'}:
+        roc_auc, pr_auc, fpr_ratio, tpr_ratio = get_auc(
+                                    probas_pred=probas_pred, 
+                                    y_true=y_true)
+        if metric_name == 'roc_auc':
+            metric = roc_auc
+        elif metric_name == 'pr_auc':
+            metric = pr_auc
+        elif metric_name == 'fpr_ratio':
+            metric = fpr_ratio
+        elif metric_name == 'tpr_ratio':
+            metric = tpr_ratio
     
-    # Add in a title and axes labels
-    plt.title(f'Training and Validation {metrics_name} across epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel(f'{metrics_name}')
+    elif metric_name == "accuracy":
+        ## set y predicted with optimised thresholds, to compute accuracy
+        best_threshold, best_fscore = compute_best_fscore(y_true, probas_pred[:,1], plot=plot)
+
+        Y_pred = (probas_pred[:,1] >= best_threshold).astype(int) # threshold optimized with data, by default 
+        #Y_pred = Y_pred.long() if torch.is_tensor(Y_pred) else Y_pred.astype(int) # convert bool to int 
+        # _, Y_pred = torch.max(probas_pred.data, 1) # or with torch.max
+        total = len(y_true) 
+        correct = (Y_pred==y_true).sum()
+        metric = round(correct/total, 2)
     
-    # Set the tick locations
-    plt.xticks(np.arange(0, epoch_nb, 2))
-    
-    # Display the plot
-    plt.legend(loc='best')
-    plt.show()
+    else:
+        raise NotImplementedError("The metric you want to compute is not implemented. "
+                                  "Must be set to a value in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio', 'accuracy}")
+
+    return metric
