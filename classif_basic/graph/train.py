@@ -105,25 +105,6 @@ def train_GNN_ancestor(
     list_performance_metrics:list=["accuracy", "roc_auc", "pr_auc", "fpr_ratio", "tpr_ratio"],
     )->GCN_ancestor:
     """Train a GNN adapted to progressive integration of causal descendants, i.e. new graph-data through GCN_ancestor() layers
-
-    TODO doc if it works -> Train a basic GNN over data_total (which must contain a train mask and a valid mask), with the chosen batch method.
-        The batch (loader) method enables to split the data in batches of subgraphs, for faster GNN training.
-
-        Args:
-            data_total (torch_geometric.data.Data): the whole dataset in a graph 
-                Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
-            loader_method (str): name of the method to build the batch
-                Must be set to a value in {'neighbor_nodes'}
-            batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to 32.
-            epoch_nb (int, optional): number of times the model gets trained on train_data. Defaults to 5.
-            learning_rate (float, optional): rapidity of the gradient descent. Defaults to 0.001.
-
-            if loader_method == 'neighbor_nodes':
-                num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
-                nb_iterations_per_neighbors (int, optional): number of iterations of the loader to find the 'similar' nodes. Defaults to 2.
-
-        Returns:
-            GCN: model of our class GCN(torch.nn.Module), trained on the train set of data_total
     
     I foresee 2 methods: 
         (1) get a loader_i for all graph-data -> split batches into successive loaders (e.g. loader_parent: batches 1-15, loader_child: batches 15-30...)
@@ -155,11 +136,8 @@ def train_GNN_ancestor(
             By default ["accuracy", "roc_auc", "pr_auc", "fpr_ratio", "tpr_ratio"]
             Each element must be set to a value in {'roc_auc', 'pr_auc', 'fpr_ratio', 'tpr_ratio', 'accuracy}
 
-    Raises:
-        NotImplementedError: _description_
-
-    Returns:
-        GCN_ancestor: _description_
+        Returns:
+            GCN: model of our class GCN(torch.nn.Module), trained on the train set of data_total
     """
     # first, check that data are passed, either already splitted in batches (list_loader) or only in full-size graph format (list_data_total)
     # and complete the missing information (size of the batches / nb of batches)
@@ -242,13 +220,12 @@ def train_GNN_ancestor(
             probas_pred_train = preds[batch_child.train_mask].to(device) 
             probas_pred_valid = preds[batch_child.valid_mask].to(device) 
             # instantiates a balanced loss (depending on classes imbalance inside the batch)
-            class_weights=class_weight.compute_class_weight(class_weight='balanced', # alternative: dict_class_weights {'0':1, '1':15} 
+            dict_class_weights = {0:1, 1:5} 
+            class_weights=class_weight.compute_class_weight(class_weight='balanced', # alternative: dict_class_weights for large imbalance?
                                                             classes=np.unique(target.cpu()),
                                                             y=target.cpu().numpy())
             class_weights=torch.tensor(class_weights,dtype=torch.float).to(device)
-            #print(class_weights)
             loss = torch.nn.CrossEntropyLoss(weight=class_weights,reduction='mean')  
-            # loss = torch.nn.CrossEntropyLoss() # if balanced dataset, weights are not necessary -> TODO sample weights in any case? 
             # compute train metrics
             error_train = loss(probas_pred_train, target_train)
             dict_train_new_epoch_metrics_value[loss_name] = dict_train_new_epoch_metrics_value[loss_name] + error_train.item()

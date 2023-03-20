@@ -12,8 +12,6 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_curve
 from torch_geometric.nn import GCNConv
 
-from classif_basic.graph.utils import activate_gpu
-from classif_basic.graph.utils import check_attributes_graph_data
 from classif_basic.graph.utils import tensor_to_numpy
 from classif_basic.model import compute_best_fscore
 
