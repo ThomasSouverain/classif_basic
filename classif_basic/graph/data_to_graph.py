@@ -6,6 +6,11 @@ import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from torch_geometric.data import Data
+from torch_geometric.data import GraphStore
+from torch_geometric.data.data import DataEdgeAttr
+from torch_geometric.data.data import DataTensorAttr
+from torch_geometric.data.storage import GlobalStorage
+from torch_geometric.typing import OptTensor
 
 from classif_basic.data_preparation import handle_cat_features
 
@@ -164,7 +169,7 @@ def train_valid_split_mask(X_model:pd.DataFrame, Y_model: pd.DataFrame, preproce
     return train_mask, valid_mask
 
 
-def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges: np.array=None)->torch:
+def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges: np.array=None, nb_batches:int=None)->torch:
     """Transforms tabular data in a graph,
     From a given tabular pd.DataFrame separated in X and Y, and a list of features to connect them.
 
@@ -175,6 +180,8 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges:
             str: names of the columns, must be in a value in X.columns.
         mask (bool), by default None: boolean tensor indicating if the individual is in X_train
             Must be specified if the graph will be transformed into mini-batches (for faster computing) through sample-neighborhood
+        nb_batches (int): if specified, will return a batch_index randomly splitting X in batches
+            Will enable to trace back the group (batch) of each individual used for training, with data.batch
 
     Returns:
         torch_geometric.data.Data: graph of the previous tabular data, connected with the features of list_edges_names
@@ -236,11 +243,49 @@ def table_to_graph(X:pd.DataFrame, Y:pd.DataFrame, list_edges_names:list, edges:
     # and transform the edges indexes into int64, to enable forward propagation of GNN
     edge_index = edge_index.long()
     
+    # split individuals in batches (each one will have an index in data.batch), if specified TODO get loader from here?
+    data_size=X.shape[0]
+    batch_range = np.arange(0, nb_batches)
+
+    combination = np.repeat(batch_range, np.ceil(data_size/len(batch_range)))
+    index_batch_random = np.random.choice(combination, data_size, replace=False)
+    batch = torch.from_numpy(index_batch_random)
+
     # finally, build the graph (if other attributes e.g. edge_features, you can also pass it there)
-    data = Data(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, 
-                train_mask=train_mask, valid_mask=valid_mask)
+    data = Data_to_Graph(x=x, edge_index=edge_index, y=y, num_classes=num_classes, is_directed=True, 
+                train_mask=train_mask, valid_mask=valid_mask, batch=batch)
     
     return data
+
+class Data_to_Graph(Data):
+    def __init__(self, x: OptTensor = None, edge_index: OptTensor = None,
+                 edge_attr: OptTensor = None, y: OptTensor = None,
+                 pos: OptTensor = None, batch: OptTensor = None, **kwargs):
+        # `Data` doesn't support group_name, so we need to adjust `TensorAttr`
+        # accordingly here to avoid requiring `group_name` to be set:
+        super().__init__(tensor_attr_cls=DataTensorAttr)
+
+        # `Data` doesn't support edge_type, so we need to adjust `EdgeAttr`
+        # accordingly here to avoid requiring `edge_type` to be set:
+        GraphStore.__init__(self, edge_attr_cls=DataEdgeAttr)
+
+        self.__dict__['_store'] = GlobalStorage(_parent=self)
+
+        if x is not None:
+            self.x = x
+        if edge_index is not None:
+            self.edge_index = edge_index
+        if edge_attr is not None:
+            self.edge_attr = edge_attr
+        if y is not None:
+            self.y = y
+        if pos is not None:
+            self.pos = pos
+        if batch is not None: # batch is hence added 
+            self.batch = batch
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 def get_parent_child_data(X:pd.DataFrame, Y:pd.DataFrame, list_node_features:list, edge_parent:str, edge_child:str)->torch:
     """From a tabular DataFrame (X,Y), generates a graph-data with a directed edge egde_parent -> edge_child.

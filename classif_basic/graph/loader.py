@@ -8,6 +8,7 @@ from torch_geometric.loader import NeighborLoader
 
 from classif_basic.graph.data_to_graph import table_to_graph
 from classif_basic.graph.utils import check_attributes_graph_data
+from classif_basic.graph.utils import check_batch_info
 
 class IndexLoader(torch.utils.data.DataLoader):
     """A data loader that samples nodes within a graph following the order of their indexes, and returns
@@ -85,8 +86,8 @@ class IndexLoader(torch.utils.data.DataLoader):
 def get_loader(
     data_total:torch,
     loader_method:str,
-    batch_size:int = 150,
-    nb_batches:int = 300,
+    batch_size:int = None,
+    nb_batches:int = None,
     num_neighbors:int = 30,
     nb_iterations_per_neighbors:int = 2)->torch:
     """Returns the data split in batches of subgraphs for faster GNN training, with the chosen sampling method.
@@ -96,14 +97,14 @@ def get_loader(
             Must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
         loader_method (str): name of the method to build the batch
             Must be set to a value in {'neighbor_nodes', 'index_groups'}
-        batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to 32.
+        batch_size (int, optional): number of individuals per batch, s.t. data will be split in nb_total_indivs/batch_size for faster GNN training. Defaults to None.
 
         if loader_method == 'neighbor_nodes':
             num_neighbors (int, optional): number of 'similar' nodes to join per batch. Defaults to 30.
             nb_iterations_per_neighbors (int, optional): number of iterations of the loader to find the 'similar' nodes. Defaults to 2.
         
         if loader_method == 'index_groups':
-            nb_batches (int, optional): number of splits (i.e. batches) on which the GNN will be trained. Defaults to 4.
+            nb_batches (int, optional): number of splits (i.e. batches) on which the GNN will be trained. Defaults to None.
 
     Returns:
         torch_geometric.loader: data split in batches of subgraphs for faster GNN training
@@ -111,6 +112,9 @@ def get_loader(
 
     # first of all, check if data_total entails all the attributes to constitute the batches 
     check_attributes_graph_data(data_total)
+    # check that data are passed, either already splitted in batches (list_loader) or only in full-size graph format (list_data_total)
+    # and complete the missing information (size of the batches / nb of batches)
+    batch_size, nb_batches = check_batch_info(data_total=data_total, batch_size=batch_size, nb_batches=nb_batches)
 
     t_loader_1 = time.time()
 

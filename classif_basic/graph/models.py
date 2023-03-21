@@ -6,6 +6,7 @@ from torch.nn import ReLU
 from torch_geometric.nn import GCNConv
 from torch_geometric.nn import global_mean_pool
 from torch_geometric.nn import JumpingKnowledge
+from torch_geometric.nn import LSTMAggregation
 from torch_geometric.nn import Sequential
 from torch_geometric.nn.conv import GATConv
 
@@ -245,7 +246,7 @@ class GCN_ancestor_sequential(torch.nn.Module):
             ReLU(inplace=True),
         ])
 
-        self.seq_1 = Sequential('x, edge_index', [
+        self.seq_1 = Sequential('x, edge_index', [ # TODO only replace by seq_1 and seq_2
             (Dropout(p=0.5), 'x -> x'),
             (GCNConv(data.num_node_features, 16), 'x, edge_index -> x1'),
             ReLU(inplace=True),
@@ -271,19 +272,26 @@ class GCN_ancestor_sequential(torch.nn.Module):
             (lambda x: F.log_softmax(x, dim=1))
         ])
 
+        self.conv_end = GCNConv(16, data.num_classes)
+
+
     def forward(self, list_data, device, skip_connection): 
         # new_x_parents in case of skip connection <=> keep ancestors' values 
+        list_classif_outputs = []
+        
         new_x_parents = 0
         for i, data in enumerate(list_data): # loop for the (n) first ancestor data
             data = data.to(device)
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
 
-            x = self.seq_model(x=x, edge_index=edge_index) + new_x_parents # TODO seq_1
+            list_classif_outputs[i] = self.seq_model(x=x, edge_index=edge_index) + new_x_parents # TODO seq_1
 
             # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
             if skip_connection==True: # else stays to 0
                 new_x_parents = new_x_parents + x
+        
+        # TODO the len(list_data) will become inputs of an Aggregation layer => join them
         
         # return binary result (for classif) in last child layer
         data_end_childs = list_data[-1]
