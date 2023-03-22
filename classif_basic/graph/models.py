@@ -240,6 +240,15 @@ class GCN_ancestor_sequential(torch.nn.Module):
         self.conv_end = GCNConv(self.nb_inter_layers, data.num_classes)
         self.mlp = torch.nn.Linear(self.nb_inter_layers*self.nb_causal_channels, self.nb_inter_layers) # to aggregate at the end the different layers
 
+        self.list_mlp_childs = []
+        for nb_parents in range(self.nb_causal_channels):
+            if nb_parents==0:
+                self.list_mlp_childs.append(0) # no MLP to synthetize information if no parent
+            else:
+                mlp_new_child = torch.nn.Linear(self.nb_inter_layers*nb_parents, self.nb_inter_layers) # TODO initialize it as MLP of layer (k)?
+                self.list_mlp_childs.append(mlp_new_child)
+
+        self.bn = torch.nn.BatchNorm1d(self.nb_inter_layers)
         self.linear_end = Linear(self.nb_inter_layers, data.num_classes) # TODO instead of conv_end, because does not require to choose a parent(i) index?
             # note: euivalence with LAF implementation? "dim"=self.nb_inter_layers, "unit"=self.nb_causal_channels
 
@@ -273,21 +282,28 @@ class GCN_ancestor_sequential(torch.nn.Module):
         # new_x_parents in case of skip connection <=> keep ancestors' values 
         list_classif_outputs = []
         
-        new_x_parents = 0
-        for i, data in enumerate(list_data): # loop for the (n) first ancestor data
+        for i, data in enumerate(list_data): 
+            # first, train a GNN on X with the new causal channel == edge (k)
             data = data.to(device)
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
 
-            layer_new_parent = self.conv1(x=x, edge_index=edge_index) #+ new_x_parents # TODO skip_connection with jumping knowledge? For the moment, no skippy...
+            x = self.conv1(x=x, edge_index=edge_index) 
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
-            list_classif_outputs.append(layer_new_parent)
 
-            # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
-            if skip_connection==True: # else stays to 0
-                new_x_parents = new_x_parents + x
-        
+            # then, each child (k) uses the (k-1) informations of one's parents 
+            # TODO use a module aggregate, to aggregate the (k-1) outputs smarter in each layer (k)?
+            if len(list_classif_outputs) != 0: # begin concatenation with the first child
+                x = torch.cat(list_classif_outputs, dim=1) # TODO aggregate with LAF before MLP? 
+                #print(f"concat shape: {x.shape}")
+                x = x.view((-1, self.nb_inter_layers * len(list_classif_outputs))) 
+                self.list_mlp_childs[i]=self.list_mlp_childs[i].to(device) 
+                x = self.list_mlp_childs[i](x)
+                #print(f"Layer {i} - shape after MLP : {x.shape} \n")
+
+            list_classif_outputs.append(x)
+
         # the len(list_data) will become inputs of an Aggregation layer => join them
         # TODO x (final) = AGGREGATE by finding weights (list_classifs_outputs + x_end_child)
 
@@ -298,9 +314,9 @@ class GCN_ancestor_sequential(torch.nn.Module):
         x = x.view((-1, self.nb_inter_layers * self.nb_causal_channels))
         x = self.mlp(x)
 
+        x= self.bn(x)
         # last layer -> shape output for binary classification
         x = self.linear_end(x)
-        # TODO add a last batch-normalisation as in LAF?
 
         return F.log_softmax(x, dim=1)
 
