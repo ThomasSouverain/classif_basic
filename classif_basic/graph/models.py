@@ -233,6 +233,15 @@ class GCN_ancestor_sequential(torch.nn.Module):
         super().__init__()
 
         data = list_data[-1] # build the structure of the Sequential GNN with any data-graph, as they all share the same shape (node features == ancestors)
+        self.nb_inter_layers = 16 # TODO pass it as user's argument?
+        self.nb_causal_channels = len(list_data)
+
+        self.conv1 = GCNConv(data.num_node_features, self.nb_inter_layers)
+        self.conv_end = GCNConv(self.nb_inter_layers, data.num_classes)
+        self.mlp = torch.nn.Linear(self.nb_inter_layers*self.nb_causal_channels, self.nb_inter_layers) # to aggregate at the end the different layers
+
+        self.linear_end = Linear(self.nb_inter_layers, data.num_classes) # TODO instead of conv_end, because does not require to choose a parent(i) index?
+            # note: euivalence with LAF implementation? "dim"=self.nb_inter_layers, "unit"=self.nb_causal_channels
 
         self.seq_model = Sequential('x, edge_index', [
             (Dropout(p=0.5), 'x -> x'),
@@ -246,33 +255,18 @@ class GCN_ancestor_sequential(torch.nn.Module):
             ReLU(inplace=True),
         ])
 
-        self.seq_1 = Sequential('x, edge_index', [ # TODO only replace by seq_1 and seq_2
-            (Dropout(p=0.5), 'x -> x'),
-            (GCNConv(data.num_node_features, 16), 'x, edge_index -> x1'),
+        self.seq_parents = Sequential('x, edge_index', [ # TODO understand why the sequential model performs less than isolated fcts (torch.nn fcts different?)
+            (GCNConv(data.num_node_features, self.nb_inter_layers), 'x, edge_index -> x1'),
             ReLU(inplace=True),
-            (GCNConv(16, 16), 'x1, edge_index -> x2'),
-            ReLU(inplace=True),
-            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
-            (JumpingKnowledge("cat", 16), 'xs -> x3'),
-            ReLU(inplace=True),
-            (Dropout(p=0.5), 'x3 -> x'),
+            (Dropout(p=0.2), 'x1 -> x1'),
         ])
 
-        self.seq_2 = Sequential('x, edge_index', [
-            (Dropout(p=0.5), 'x -> x'),
-            (GCNConv(data.num_node_features, 16), 'x, edge_index -> x1'),
+        self.seq_end = Sequential('x, edge_index', [
+            (GCNConv(data.num_node_features, self.nb_inter_layers), 'x, edge_index -> x1'),
             ReLU(inplace=True),
-            (GCNConv(16, 16), 'x1, edge_index -> x2'),
-            ReLU(inplace=True),
-            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
-            (JumpingKnowledge("cat", 16, num_layers=2), 'xs -> x3'),
-            ReLU(inplace=True),
-            (Dropout(p=0.5), 'x3 -> x3'),
-            (GCNConv(16*2, data.num_classes), 'x3, edge_index -> x'),
-            (lambda x: F.log_softmax(x, dim=1))
+            (Dropout(p=0.2), 'x1 -> x1'),
+            (GCNConv(self.nb_inter_layers, data.num_classes), 'x1, edge_index -> x2'),
         ])
-
-        self.conv_end = GCNConv(16, data.num_classes)
 
 
     def forward(self, list_data, device, skip_connection): 
@@ -285,23 +279,30 @@ class GCN_ancestor_sequential(torch.nn.Module):
             x = data.x.float().to(device)
             edge_index=data.edge_index.to(device)
 
-            list_classif_outputs[i] = self.seq_model(x=x, edge_index=edge_index) + new_x_parents # TODO seq_1
+            layer_new_parent = self.conv1(x=x, edge_index=edge_index) #+ new_x_parents # TODO skip_connection with jumping knowledge? For the moment, no skippy...
+            x = F.relu(x)
+            x = F.dropout(x, training=self.training)
+            list_classif_outputs.append(layer_new_parent)
 
             # TODO below -> add the child(n) as parent of child (n+1) for further shortcuts
             if skip_connection==True: # else stays to 0
                 new_x_parents = new_x_parents + x
         
-        # TODO the len(list_data) will become inputs of an Aggregation layer => join them
-        
-        # return binary result (for classif) in last child layer
-        data_end_childs = list_data[-1]
+        # the len(list_data) will become inputs of an Aggregation layer => join them
+        # TODO x (final) = AGGREGATE by finding weights (list_classifs_outputs + x_end_child)
 
-        x_end_childs = data_end_childs.x.float().to(device)
-        edge_index_end_childs = data_end_childs.edge_index.to(device)
+        # aggregate here in forward -> TODO in a separate fct? 
+        # if A and B are of shape (3, 4), torch.cat([A, B], dim=0) will be of shape (6, 4)
+        x = torch.cat(list_classif_outputs, dim=1)
+        # print(f"concat shape: {x.shape}")
+        x = x.view((-1, self.nb_inter_layers * self.nb_causal_channels))
+        x = self.mlp(x)
 
-        x_end_childs = self.seq_model(x_end_childs, edge_index_end_childs) # TODO seq_2
+        # last layer -> shape output for binary classification
+        x = self.linear_end(x)
+        # TODO add a last batch-normalisation as in LAF?
 
-        return x
+        return F.log_softmax(x, dim=1)
 
 class GraphAttentionLayer(torch.nn.Module):
     """
