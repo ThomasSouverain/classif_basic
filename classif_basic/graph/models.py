@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn import Dropout
 from torch.nn import Linear
+from torch.nn import Parameter
 from torch.nn import ReLU
 from torch_geometric.nn import GCNConv
 from torch_geometric.nn import global_mean_pool
@@ -238,44 +239,20 @@ class GCN_ancestor_sequential(torch.nn.Module):
 
         self.conv1 = GCNConv(data.num_node_features, self.nb_inter_layers)
         self.conv_end = GCNConv(self.nb_inter_layers, data.num_classes)
-        self.mlp = torch.nn.Linear(self.nb_inter_layers*self.nb_causal_channels, self.nb_inter_layers) # to aggregate at the end the different layers
+        self.mlp = torch.nn.Linear(data.num_classes*self.nb_causal_channels, data.num_classes) # to aggregate at the end the different layers
 
         self.list_mlp_childs = []
-        for nb_parents in range(self.nb_causal_channels):
+        for nb_parents in range(self.nb_causal_channels): # TODO list comprehension 
             if nb_parents==0:
                 self.list_mlp_childs.append(0) # no MLP to synthetize information if no parent
             else:
-                mlp_new_child = torch.nn.Linear(self.nb_inter_layers*nb_parents, self.nb_inter_layers) # TODO initialize it as MLP of layer (k)?
+                mlp_new_child = torch.nn.Linear(data.num_classes*nb_parents, data.num_classes)#(self.nb_inter_layers*nb_parents, self.nb_inter_layers) 
                 self.list_mlp_childs.append(mlp_new_child)
 
-        self.bn = torch.nn.BatchNorm1d(self.nb_inter_layers)
-        self.linear_end = Linear(self.nb_inter_layers, data.num_classes) # TODO instead of conv_end, because does not require to choose a parent(i) index?
-            # note: euivalence with LAF implementation? "dim"=self.nb_inter_layers, "unit"=self.nb_causal_channels
+        self.bn = torch.nn.BatchNorm1d(data.num_classes)
 
-        self.seq_model = Sequential('x, edge_index', [
-            (Dropout(p=0.5), 'x -> x'),
-            (GCNConv(data.num_node_features, 64), 'x, edge_index -> x1'),
-            ReLU(inplace=True),
-            (GCNConv(64, 64), 'x1, edge_index -> x2'),
-            ReLU(inplace=True),
-            (lambda x1, x2: [x1, x2], 'x1, x2 -> xs'),
-            (JumpingKnowledge("cat", 64, num_layers=2), 'xs -> x'),
-            Linear(2 * 64, data.num_classes),
-            ReLU(inplace=True),
-        ])
-
-        self.seq_parents = Sequential('x, edge_index', [ # TODO understand why the sequential model performs less than isolated fcts (torch.nn fcts different?)
-            (GCNConv(data.num_node_features, self.nb_inter_layers), 'x, edge_index -> x1'),
-            ReLU(inplace=True),
-            (Dropout(p=0.2), 'x1 -> x1'),
-        ])
-
-        self.seq_end = Sequential('x, edge_index', [
-            (GCNConv(data.num_node_features, self.nb_inter_layers), 'x, edge_index -> x1'),
-            ReLU(inplace=True),
-            (Dropout(p=0.2), 'x1 -> x1'),
-            (GCNConv(self.nb_inter_layers, data.num_classes), 'x1, edge_index -> x2'),
-        ])
+        # note: equivalence with LAF implementation? "dim"=self.nb_inter_layers, "unit"=self.nb_causal_channels
+        self.list_weights_channels = [] # TODO print for explainability if useful (weights of each causal channel)
 
 
     def forward(self, list_data, device, skip_connection): 
@@ -291,32 +268,42 @@ class GCN_ancestor_sequential(torch.nn.Module):
             x = self.conv1(x=x, edge_index=edge_index) 
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
+            x = self.conv_end(x=x, edge_index=edge_index)
+            x = F.log_softmax(x, dim=1)
+            # x of shape (nb feats, nb classes)
 
             # then, each child (k) uses the (k-1) informations of one's parents 
             # TODO use a module aggregate, to aggregate the (k-1) outputs smarter in each layer (k)?
             if len(list_classif_outputs) != 0: # begin concatenation with the first child
                 x = torch.cat(list_classif_outputs, dim=1) # TODO aggregate with LAF before MLP? 
-                #print(f"concat shape: {x.shape}")
-                x = x.view((-1, self.nb_inter_layers * len(list_classif_outputs))) 
+                x = x.view((-1, data.num_classes * len(list_classif_outputs)))#self.nb_inter_layers * len(list_classif_outputs))) 
                 self.list_mlp_childs[i]=self.list_mlp_childs[i].to(device) 
                 x = self.list_mlp_childs[i](x)
-                #print(f"Layer {i} - shape after MLP : {x.shape} \n")
+            
+            # TODO weight here? Or in final aggregation? // multi-layer attention, with progressive integration of causal information...
+            # attention weights for causal channels (GNN) aggregation
+            # uniform weights for each GNN prediction
+            params = torch.ones(x.shape[0], 1)
+            torch.nn.init.xavier_normal_(params)
+            weight_channel=Parameter(params, \
+                                        requires_grad=True).to(device)
+            weight_channel=torch.exp(weight_channel)
+            x = weight_channel*x
+            self.list_weights_channels.append(weight_channel)
 
             list_classif_outputs.append(x)
 
-        # the len(list_data) will become inputs of an Aggregation layer => join them
-        # TODO x (final) = AGGREGATE by finding weights (list_classifs_outputs + x_end_child)
-
         # aggregate here in forward -> TODO in a separate fct? 
-        # if A and B are of shape (3, 4), torch.cat([A, B], dim=0) will be of shape (6, 4)
+        # if A and B are of shape (3, 4), torch.cat([A, B], dim=0) will be of shape (6, 4)        
+        # TODO? concatenation // in LAF and multi-head attention
         x = torch.cat(list_classif_outputs, dim=1)
-        # print(f"concat shape: {x.shape}")
-        x = x.view((-1, self.nb_inter_layers * self.nb_causal_channels))
+        x = x.view((-1, data.num_classes * self.nb_causal_channels))
         x = self.mlp(x)
 
+        # TODO? other option taking only the last data (with the lastly adjusted weights)
+        #x = list_classif_outputs[-1]
+
         x= self.bn(x)
-        # last layer -> shape output for binary classification
-        x = self.linear_end(x)
 
         return F.log_softmax(x, dim=1)
 
