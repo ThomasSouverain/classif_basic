@@ -179,6 +179,8 @@ class GCN_ancestor(torch.nn.Module):
         # temporary check: OK if conv layer initialized?
         self.conv1 = GCNConv(data.num_node_features, 16)
 
+        self.bn = torch.nn.BatchNorm1d(data.num_classes)
+
     def forward(self, list_data, device, skip_connection): 
 
         # TODO delete temporary diminutions (self.conv1 -> uniquely specify "self"?, no shortcut through new_x_parent -> broadcast?)
@@ -226,6 +228,8 @@ class GCN_ancestor(torch.nn.Module):
         x_end_childs = F.relu(x_end_childs)
         x_end_childs = F.dropout(x_end_childs, training=self.training)
         x = self.conv_end(x_end_childs, edge_index_end_childs)
+
+        x = self.bn(x)
 
         return F.log_softmax(x, dim=1)
     
@@ -307,166 +311,84 @@ class GCN_ancestor_sequential(torch.nn.Module):
 
         return F.log_softmax(x, dim=1)
 
-class GraphAttentionLayer(torch.nn.Module):
-    """
-    Simple GAT layer, similar to https://arxiv.org/abs/1710.10903
-    """
-    def __init__(self, in_features, out_features, dropout, alpha, concat=True):
-        super(GraphAttentionLayer, self).__init__()
-        self.dropout = dropout
-        self.in_features = in_features
-        self.out_features = out_features
-        self.alpha = alpha
-        self.concat = concat
-
-        self.W = torch.nn.Parameter(torch.empty(size=(in_features, out_features)))
-        torch.nn.init.xavier_uniform_(self.W.data, gain=1.414)
-        self.a = torch.nn.Parameter(torch.empty(size=(2*out_features, 1)))
-        torch.nn.init.xavier_uniform_(self.a.data, gain=1.414)
-
-        self.leakyrelu = torch.nn.LeakyReLU(self.alpha)
-
-    def forward(self, h, adj):
-        Wh = torch.mm(h, self.W) # h.shape: (N, in_features), Wh.shape: (N, out_features)
-        e = self._prepare_attentional_mechanism_input(Wh)
-
-        zero_vec = -9e15*torch.ones_like(e)
-        attention = torch.where(adj > 0, e, zero_vec)
-        attention = F.softmax(attention, dim=1)
-        attention = F.dropout(attention, self.dropout, training=self.training)
-        h_prime = torch.matmul(attention, Wh)
-
-        if self.concat:
-            return F.elu(h_prime)
-        else:
-            return h_prime
-
-    def _prepare_attentional_mechanism_input(self, Wh):
-        # Wh.shape (N, out_feature)
-        # self.a.shape (2 * out_feature, 1)
-        # Wh1&2.shape (N, 1)
-        # e.shape (N, N)
-        Wh1 = torch.matmul(Wh, self.a[:self.out_features, :])
-        Wh2 = torch.matmul(Wh, self.a[self.out_features:, :])
-        # broadcast add
-        e = Wh1 + Wh2.T
-        return self.leakyrelu(e)
-
-    def __repr__(self):
-        return self.__class__.__name__ + ' (' + str(self.in_features) + ' -> ' + str(self.out_features) + ')'
-
-class GAT_ancestor(torch.nn.Module):
-    '''Train a GNN by passing multiple (successive) data-graphs, progressively integrating new features.
-    - data are directly passed for training as initialization of the layers, instead of x and edge_index (vs GCN_ancestor_edge which will try to be lighter)
-    - which makes possible loading for GNN training with large data? 
-    But not very scalable (each causal descendant + last layer with all features => add a new graph to the loader...)
-    '''
-    # TODO pass data each time a causal child is added -> really scalable? Test it on large data, and improve it ; investigate philosophical basis 
-    # test a Sequential model - which will then respect the order between layer 1 and layer 2
-    # reasoning: neural network => causal "productive" influence of layer 1 on layer 2
-    # TODO doc if it works 
+class GAT(torch.nn.Module):
+    # GAT for a list_data with a single data-graph 
     def __init__(self, list_data):
-        """Dense version of GAT."""
-        super().__init__()
-        data = list_data[0] # as here the data.x have the same dim (only ancestors), the GAT layers have all the same shape
+        super(GAT, self).__init__()
 
-        nfeat=data.num_nodes
-        nhid=3 # nb of hidden layers? TODO verify
-        nclass=data.num_classes
-        dropout=0.3 # drop 30% of irrelevant features? TODO verify
-        alpha=0.01
-        nheads=2
+        data = list_data[-1] # build the structure of the GAT with any data-graph, as they all share the same shape (node features == ancestors)
 
-        self.dropout = dropout
+        self.hid = 8
+        self.in_head = 8
+        self.out_head = 1
+        
+        self.conv1 = GATConv(data.num_features, self.hid, heads=self.in_head, dropout=0.6) 
+        self.conv2 = GATConv(self.hid*self.in_head, data.num_classes, concat=False,
+                             heads=self.out_head, dropout=0.6)
 
-        self.attentions = [GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) for _ in range(nheads)]
-        for i, attention in enumerate(self.attentions):
-            self.add_module('attention_{}'.format(i), attention)
+    def forward(self, list_data, device, skip_connection=False):
 
-        self.out_att = GraphAttentionLayer(nhid * nheads, nclass, dropout=dropout, alpha=alpha, concat=False)
-
-    def forward(self, list_data, device, skip_connection): 
-        data = list_data[0] # for the moment, implemented only for one data graph TODO etxend if it works 
+        data = list_data[-1] # build the structure of the Sequential GNN with any data-graph, as they all share the same shape (node features == ancestors)
+        self.nb_causal_channels = len(list_data)
 
         data = data.to(device)
         x = data.x.float().to(device)
-        edge_index=data.edge_index.to(device)
+        edge_index=data.edge_index.to(device) 
 
-        x = F.dropout(x, self.dropout, training=self.training)
-        x = torch.cat([att(x, edge_index) for att in self.attentions], dim=1)
-        x = F.dropout(x, self.dropout, training=self.training)
-        x = F.elu(self.out_att(x, edge_index))
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv1(x, edge_index)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv2(x, edge_index)
+        
         return F.log_softmax(x, dim=1)
 
-class GAT_conv_ancestor(torch.nn.Module):
-    def __init__(self, list_data, hidden_size=2):
+class GAT_ancestor(torch.nn.Module):
+    def __init__(self, list_data):
         super().__init__()
-        data = list_data[0] # for the moment, implemented only for one data graph TODO etxend if it works 
 
-        self.hidden_size = hidden_size
-        self.num_features = data.num_features # 3 in toy example
-        self.target_size = 2 # data.num_classes # 1 in toy example
-        # self.convs = [GATConv(self.num_features, self.hidden_size)]
-        self.convs = [GATConv(self.num_features, self.hidden_size),
-                      GATConv(self.hidden_size, self.hidden_size)]
-        self.linear = torch.nn.Linear(self.hidden_size, self.target_size)
-
-        # conv = GATConv(data.num_features, 32)
-        # conv(data.x.float(), data.edge_index)
+        data = list_data[-1] # build the structure of the GAT with any data-graph, as they all share the same shape (node features == ancestors)
         
+        self.nb_causal_channels = len(list_data) 
+
+        # TODO for internal projection of data (intermediate layers), choose self.nb_inter_layers instead of data.num_features?
+        self.list_gat_childs = []
+        for nb_parents in range(self.nb_causal_channels): 
+            gat_new_child = GATConv(data.num_features*(nb_parents+1), data.num_features, heads=1, dropout=0.6)
+            self.list_gat_childs.append(gat_new_child)
+
+        self.gat_conv_end = GATConv(data.num_features*self.nb_causal_channels, data.num_classes, concat=False,
+                             heads=1, dropout=0.6)
+
+        self.bn = torch.nn.BatchNorm1d(data.num_classes)
+
     def forward(self, list_data, device, skip_connection=False):
-        data = list_data[0].cpu()
-        x = data.x.float().cpu()
-        edge_index=data.edge_index.cpu()
-        #edge_attr = data.edge_attr#.to(device) if data.edge_attr is not None else None # edge_attr not used for the moment? TODO combine features?
-        x=self.convs[0](x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.convs[-1](x, edge_index) 
-        # print("forward before linear!")
-        x = self.linear(x.to(device)) # TODO improve use of the device (initialisation & forward -> test other attention matrices, other weights?)
-        # print("forward after linear!")
-        return F.relu(x) # since we know Y = log_gdp > 0, enforce via relu        
 
-        # for conv in self.convs[:-1]: 
-        #     print("conv!\n")
-        #     x = conv(x, edge_index)#.to(device)
-        #     x = F.relu(x)
-        #     x = F.dropout(x, training=self.training)
-        # x = self.convs[-1](x, edge_index) 
-        # x = self.linear(x)
-        # return F.relu(x) # since we know Y = log_gdp > 0, enforce via relu
+        list_classif_outputs = []  
+        
+        for i, data in enumerate(list_data): 
 
-    # # TODO doc if it works 
-    # def __init__(self, list_data):
-    #     """Dense version of GAT."""
-    #     super().__init__()
-    #     data = list_data[0] # as here the data.x have the same dim (only ancestors), the GAT layers have all the same shape
+            data = data.to(device)
+            x = data.x.float().to(device)
+            edge_index=data.edge_index.to(device)
 
-    #     nfeat=data.num_nodes
-    #     nhid=3 # nb of hidden layers? TODO verify
-    #     nclass=data.num_classes
-    #     dropout=0.3 # drop 30% of irrelevant features? TODO verify
-    #     alpha=0.01
-    #     nheads=2
+            nb_parents = len(list_classif_outputs)
+            # add data with new edge index for new GAT layer
+            x = torch.cat(list_classif_outputs+[x], dim=1) 
+            x = x.view((-1, data.num_features * (nb_parents+1)))
+            x = F.dropout(x, p=0.6, training=self.training) 
+            # new GAT layer, on the current causal knowledge
+            self.list_gat_childs[i]=self.list_gat_childs[i].to(device) 
+            x = self.list_gat_childs[i](x, edge_index)
+            x = F.elu(x)
 
-    #     self.dropout = dropout
+            list_classif_outputs.append(x)
 
-    #     self.attentions = [GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) for _ in range(nheads)]
-    #     for i, attention in enumerate(self.attentions):
-    #         self.add_module('attention_{}'.format(i), attention)
+        x = torch.cat(list_classif_outputs, dim=1) if self.nb_causal_channels > 1 else x
+        x = x.view((-1, data.num_features * self.nb_causal_channels))
+        x = F.dropout(x, p=0.6, training=self.training) 
+        x = self.gat_conv_end(x, edge_index)
 
-    #     self.out_att = GraphAttentionLayer(nhid * nheads, nclass, dropout=dropout, alpha=alpha, concat=False)
+        x = self.bn(x)
 
-    # def forward(self, list_data, device, skip_connection): 
-    #     data = list_data[0] # for the moment, implemented only for one data graph TODO etxend if it works 
-
-    #     data = data.to(device)
-    #     x = data.x.float().to(device)
-    #     edge_index=data.edge_index.to(device)
-
-    #     x = F.dropout(x, self.dropout, training=self.training)
-    #     x = torch.cat([att(x, edge_index) for att in self.attentions], dim=1)
-    #     x = F.dropout(x, self.dropout, training=self.training)
-    #     x = F.elu(self.out_att(x, edge_index))
-    #     return F.log_softmax(x, dim=1)
+        return F.log_softmax(x, dim=1)
