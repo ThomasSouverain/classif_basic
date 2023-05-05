@@ -11,9 +11,9 @@ from xgboost import XGBClassifier
 from classif_basic.graph.evaluate import compute_metric
 from classif_basic.graph.evaluate import get_auc
 from classif_basic.graph.evaluate import get_loss
+from classif_basic.graph.laf import LAFNet
 from classif_basic.graph.loader import get_loader
 from classif_basic.graph.models import GAT_ancestor
-from classif_basic.graph.models import GAT_conv_ancestor
 from classif_basic.graph.models import GCN_ancestor
 from classif_basic.graph.models import GCN_ancestor_sequential
 from classif_basic.graph.plot import plot_metric_epochs
@@ -23,7 +23,43 @@ from classif_basic.graph.utils import check_attributes_graph_data
 from classif_basic.graph.utils import check_batch_info
 from classif_basic.model import compute_best_fscore
 
-def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd.DataFrame, Y_valid:pd.DataFrame)->tuple:
+def feat_name_to_df_index(df:pd.DataFrame, list_names:list)->list:
+    """From a list of features names in a df, get a list with their corresponding indexes. 
+
+    Args:
+        df (pd.DataFrame): initial dataframe 
+        list_names (List(str)): list of features, which are columns of df
+
+    Returns:
+        list: new list with the indexes of each feature in the initial list
+    """
+    df_feats_order_list = df.columns.to_list()
+    list_index = []
+    for name in list_names:
+        index = df_feats_order_list.index(name)
+        list_index.append(index)
+    return list_index
+
+def get_list_interaction_constraints_indexes(df:pd.DataFrame, interaction_constraints:list)->list:
+    """From the list joining features interaction constraints by their names, get a new list with their indexes in the dataframe.
+    Used to pass the feature interaction constraint to XGB during training.  
+
+    Args:
+        df (pd.DataFrame): _description_
+        interaction_constraints (List(list(str))): list with concatenated lists of features allowed to interact 
+            Example: [['sex', 'native-country']] means 'features sex and native-country' are only allowed to interact with each other & with no other features,
+            to build the splits of each decision tree
+
+    Returns:
+        List(list(int)): list with concatenated lists of the indexes of features allowed to interact 
+    """
+    list_interaction_constraints_index = []
+    for list_names in interaction_constraints:
+        list_index = feat_name_to_df_index(df, list_names)
+        list_interaction_constraints_index.append(list_index)
+    return list_interaction_constraints_index
+
+def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd.DataFrame, Y_valid:pd.DataFrame, interaction_constraints:list=None)->tuple:
     """Given DataFrames X and Y, performs train/valid/test split 
     and trains a baseline XGB classifier for comparison with other models.
 
@@ -32,6 +68,12 @@ def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd
         Y_train (pd.DataFrame): Target of the train set used for other models training
         X_valid (pd.DataFrame): X of the valid set used for other models training
         Y_valid (pd.DataFrame): Target of the valid set used for other models training
+        interaction_constraints (List(list(int) or List(list(str))): list specifying the features which are allowed to interact
+            The goal is to test if this feature interaction constraints drastically decreases the XGB performance
+            Example: [[0, 2]] means 'feature 0 and 2 are only allowed to interact with each other & with no other features,
+            to build the splits of each decision tree
+            Example: [['sex', 'native-country']] means 'features sex and native-country' are only allowed to interact with each other & with no other features,
+            to build the splits of each decision tree
 
     Returns:
         tuple: performance metrics of the XGB on train&valid set
@@ -54,6 +96,16 @@ def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd
         "importance_type": "gain",
         "use_label_encoder": False,
     }
+
+    if interaction_constraints is not None:
+        print(f"Interaction constraints between features {interaction_constraints}")
+        # test the type of the 1st element of each list 
+        if type(interaction_constraints[0][0])==str: 
+            # convert features' names to their indexes in df to apply the feature interaction constraints
+            interaction_constraints = get_list_interaction_constraints_indexes(X_train, interaction_constraints)
+        elif type(interaction_constraints[0][0]) != int:
+            raise NotImplementedError("The list of interaction constraints you pass is not valid. Must group lists of indexes (int) or names (str) of the features.")
+        xgb_classif_params['interaction_constraints'] = str(interaction_constraints)
 
     eval_metric="auc"
 
@@ -118,7 +170,7 @@ def train_GNN_ancestor(
         list_data_total (List(torch_geometric.data.Data)): the concatenation of each data-graph, following the order of their causal links (edges)
             Each data-graph must have the attributes x, edge_index, y, num_classes, num_node_features, train_mask, valid_mask
         model_type (str): how to train the GNN to progressively integrate causal information (new data-graph edge = new layer of the GNN)
-            Must be set to a value in {'conv', 'sequential', 'attention', 'conv_attention'}
+            Must be set to a value in {'conv', 'sequential', 'attention', 'laf'}
         loader_method (str): how to split data in batches to train the GNN
             Must be set to a value in {'neighbor_nodes', 'index_groups'}
             if loader_method == 'neighbor_nodes':
@@ -170,11 +222,11 @@ def train_GNN_ancestor(
         classifier = GCN_ancestor_sequential(list_data_total).to(device)
     elif model_type=='attention':
         classifier = GAT_ancestor(list_data_total).to(device) 
-    elif model_type=='conv_attention':
-        classifier = GAT_conv_ancestor(list_data_total).to(device)
+    elif model_type=='laf':
+        classifier = LAFNet(list_data_total).to(device)
     else:
         raise NotImplementedError("Your ancestor GNN 'model_type' is not implemented. "
-                                  "Must be set to a value in {'conv', 'sequential', 'attention', 'conv_attention'}")
+                                  "Must be set to a value in {'conv', 'sequential', 'attention', 'laf'}")
     #loss=torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
 
