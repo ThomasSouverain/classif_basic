@@ -59,6 +59,7 @@ def plot_perfs_gnn(classifier:torch.nn.Module,
     classifier.eval()
 
     data_child = list_data_test[-1] # get data.x and data.y from the last graph-data (as it remains the same for all data, with GCN_ancestor)
+    print(data_child.x.shape)
     target = data_child.y.to(device)
     target_train = target[data_child.train_mask]
     target_valid = target[data_child.valid_mask]

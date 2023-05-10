@@ -139,7 +139,9 @@ def train_xgb_benchmark(X_train: pd.DataFrame, Y_train:pd.DataFrame, X_valid: pd
             probas_pred=probas_pred_train_valid,
             plot=True)
 
-    return roc_auc, pr_auc, fpr_ratio, tpr_ratio
+    print(f"roc_auc: {roc_auc}, pr_auc: {pr_auc}, fpr_ratio: {fpr_ratio}, tpr_ratio: {tpr_ratio}")
+
+    return model 
 
 def train_GNN_ancestor(
     list_data_total:torch,
@@ -215,7 +217,7 @@ def train_GNN_ancestor(
     # activate and signal the use of GPU for faster processing
     device = activate_gpu()
     # initialize the structure of the classifier, and prepare for GNN training (with GPU)
-    print(f"\n GNN of {model_type} type")
+    #print(f"\n GNN of {model_type} type")
     if model_type=='conv':
         classifier = GCN_ancestor(list_data_total).to(device) 
     elif model_type=='sequential':
@@ -230,7 +232,7 @@ def train_GNN_ancestor(
     #loss=torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
 
-    print("\n'''Training Start '''\n")
+    #print("\n'''Training Start '''\n")
     classifier.train()
 
     # get performance metrics in lists -> plot them across epochs
@@ -306,7 +308,7 @@ def train_GNN_ancestor(
 
         list_train_losses = dict_train_epochs_metrics[loss_name]
         list_valid_losses = dict_valid_epochs_metrics[loss_name]
-        print(f"||| Epoch {epoch + 1} {loss_name}_train = {list_train_losses[-1]} {loss_name}_valid = {list_valid_losses[-1]}")
+        #print(f"||| Epoch {epoch + 1} {loss_name}_train = {list_train_losses[-1]} {loss_name}_valid = {list_valid_losses[-1]}")
 
         # cross-validation
         if len(list_train_losses) > cv_step: # enable initialisation of the losses 
@@ -324,20 +326,22 @@ def train_GNN_ancestor(
 
     str_multiple_data_graphs = "unique graph-data" if len(list_data_total)==1 else "multiple graph-data"
 
+    training_time = round((t_basic_2 - t_basic_1)/60)
+
     print(f"\n{model_type} GNN model, Loader method {loader_method} on {str_multiple_data_graphs}")
-    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {nb_batches} batches each of {batch_size} individuals and {epoch_nb} epochs took {round((t_basic_2 - t_basic_1)/60)} mn")
+    print(f"Training of the basic GCN on Census on {data_total.x.shape[0]} nodes and {data_total.edge_index.shape[1]} edges, \n with {nb_batches} batches each of {batch_size} individuals and {epoch_nb} epochs took {training_time} mn")
 
     print("\n||| Results of the GNN across epochs |||")
 
-    for metric_name in list_performance_metrics:
+    # for metric_name in list_performance_metrics:
 
-        plot_metric_epochs(metric_name=metric_name, 
-                    list_train_epoch_metrics=dict_train_epochs_metrics[metric_name], 
-                    list_valid_epoch_metrics=dict_valid_epochs_metrics[metric_name])
+    #     plot_metric_epochs(metric_name=metric_name, 
+    #                 list_train_epoch_metrics=dict_train_epochs_metrics[metric_name], 
+    #                 list_valid_epoch_metrics=dict_valid_epochs_metrics[metric_name])
 
     print("\n||| Results of the GNN on the last epoch |||")
     # even if it is arbitrary, plot the results on the last batch (small => biased predictions...) -> how TODO else? 
-    plot_perfs_gnn(classifier=classifier,
-                 list_data_test=list_data) # as it is the last => child list_data in memory
+    # plot_perfs_gnn(classifier=classifier,
+    #              list_data_test=list_data) # as it is the last => child list_data in memory
 
-    return classifier
+    return training_time, dict_train_new_epoch_metrics_value, dict_valid_new_epoch_metrics_value
